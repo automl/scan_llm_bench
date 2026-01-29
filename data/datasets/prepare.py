@@ -63,7 +63,7 @@ from timeit import default_timer as timer
 from datasets import Dataset, load_from_disk, load_dataset
 from transformers import AutoTokenizer
 
-from data.datasets.data_prep_utils import concat_chunck
+from data.datasets.data_prep_utils import concat_chunk
 
 # Linux’s default “fork” start method inherits open handles (semaphores/CWD)
 # in the pymp-* temp directory, leading to OSError on cleanup.
@@ -225,7 +225,7 @@ def main(_):
     # it truncates leftover tokens that don't fill a full max_seq_length chunk.
     max_seq_length = FLAGS.seq_length + 1
     print(f'Concatenating and chunking in sequances of length {max_seq_length}.')
-    chunked_ds = tokenized_ds.map(partial(concat_chunck, max_seq_length=max_seq_length), **map_setup)
+    chunked_ds = tokenized_ds.map(partial(concat_chunk, max_seq_length=max_seq_length), **map_setup)
     print(f'Number of tokens in chunked_ds: {len(chunked_ds) * max_seq_length:_}')
 
     # Cast to tensors

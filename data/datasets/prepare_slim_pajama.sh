@@ -8,8 +8,8 @@ cd ~/plainLM
 
 # TRAIN SET
 PYTHONPATH=. python data/datasets/prepare.py \
-  --out_path="/fast/najroldi/data/lm/slim_pajama/sp_tokenizer_GPTNeoX" \
-  --cache_path="/fast/najroldi/tmp" \
+  --out_path="/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/lm/slim_pajama/sp_tokenizer_GPTNeoX" \
+  --cache_path="/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/tmp" \
   --download --tokenize --chunk \
   --save_tokenized --save_tokenizer \
   --dataset_path="cerebras/SlimPajama-627B" \
@@ -20,8 +20,8 @@ PYTHONPATH=. python data/datasets/prepare.py \
 
 # VALID SET
 PYTHONPATH=. python data/datasets/prepare.py \
-  --out_path="/fast/najroldi/data/lm/slim_pajama/sp_tokenizer_GPTNeoX" \
-  --cache_path="/fast/najroldi/tmp" \
+  --out_path="/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/lm/slim_pajama/sp_tokenizer_GPTNeoX" \
+  --cache_path="/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/tmp" \
   --download --tokenize --chunk \
   --save_tokenized --save_tokenizer \
   --dataset_path="cerebras/SlimPajama-627B" \

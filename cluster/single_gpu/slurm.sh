@@ -11,8 +11,8 @@
 #SBATCH --ntasks=1
 #SBATCH --array=1
 
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate plainLM
+source ~/anaconda3/bin/activate
+conda activate scan_llm
 
 # Hyperparmeters are specified in a YAML configuration file
 config=config/config.yaml

@@ -41,6 +41,21 @@ def load_config(path):
   return Config(**cfg), sweep_size
 
 
+def dict_to_config(config_dict):
+  """
+  Convert a dictionary to a Config namedtuple.
+  Useful for creating configs (e.g., for NePS HPO).
+  
+  Args:
+    config_dict: Dictionary containing config values.
+    
+  Returns:
+    Tuple of (Config namedtuple, sweep_size=1)
+  """
+  Config = namedtuple('Config', config_dict.keys())
+  return Config(**config_dict), 1
+
+
 def init_wandb(cfg):
   """Initalizes a wandb run"""
   os.environ['WANDB__SERVICE_WAIT'] = '600'
@@ -140,6 +155,8 @@ def get_exp_dir_path(cfg):
   exp_dir = os.path.join(cfg.out_dir, cfg.exp_name)
   if FLAGS.job_idx is not None:  # subfolder for each job in the sweep
     exp_dir = os.path.join(exp_dir, f"job_idx_{FLAGS.job_idx}")
+  elif FLAGS.job_cluster is not None:  # unique folder for single jobs
+    exp_dir = os.path.join(exp_dir, f"job_{FLAGS.job_cluster}")
   return exp_dir
 
 

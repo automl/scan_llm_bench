@@ -55,12 +55,12 @@ lr_end_pct: null
 log_every_steps: 1
 print_progress: True
 
-use_wandb: False
-wandb_project: 'llm'
-wandb_dir: '/fast/najroldi/logs/llm/wandb'
+use_wandb: true
+wandb_project: 'scan_llm_bench'
+wandb_dir: '/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/wandb'
 wandb_run_name: 'tr_check'
 exp_name: 'tr_check'
-out_dir: '/fast/najroldi/exp/llm'
+out_dir: '/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/checkpoints'
 over_write: True
 
 resume: False

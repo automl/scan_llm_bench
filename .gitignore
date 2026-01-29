@@ -1,7 +1,10 @@
 # Ignore Python cache files
 __pycache__/
 *.py[cod]
-
+checkpoints/
+logs/
+data/data/
+neps_results/
 # Ignore Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 
@@ -10,7 +13,7 @@ venv/
 env/
 .venv/
 .env/
-
+.trace*
 # Ignore log files
 *.log
 

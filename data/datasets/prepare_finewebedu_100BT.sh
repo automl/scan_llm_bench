@@ -7,8 +7,8 @@ mkdir -p /fast/najroldi/tmp
 cd ~/plainLM
 
 PYTHONPATH=. python data/datasets/prepare.py \
-  --out_path="/fast/najroldi/data/lm/fwedu/fwedu_sample_100B_tokenizer_GPTNeoX" \
-  --cache_path="/fast/najroldi/tmp" \
+  --out_path="/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/lm/fwedu/fwedu_sample_100B_tokenizer_GPTNeoX" \
+  --cache_path="/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/tmp" \
   --download --tokenize --chunk \
   --save_tokenized --save_tokenizer \
   --dataset_path="HuggingFaceFW/fineweb-edu" \

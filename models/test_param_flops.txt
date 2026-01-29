@@ -1,0 +1,13 @@
+Model: 1536 dim, 24 layers, GLU, 10B tokens
+─────────────────────────────────────────
+Total params:         468,878,136
+Non-embedding params: 314,318,136
+
+FLOPs per token (training):
+  Detailed:   2.01 GFLOPs
+  Kaplan 6N:  1.89 GFLOPs
+  Ratio:      1.065
+
+Total Training FLOPs (10B tokens):
+  Detailed:   20.10 EFLOPs
+  Kaplan 6N:  18.86 EFLOPs

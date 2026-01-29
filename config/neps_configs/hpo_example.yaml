@@ -1,0 +1,117 @@
+##
+## Config for Hyperparameter Optimization with NePS.
+## 
+## This config demonstrates how to define hyperparameter ranges that NePS
+## will search over. Add a 'neps_search_space' section with the parameters
+## you want to optimize.
+##
+
+deterministic: False
+seed: 1996
+
+trainset_path: "/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/lm/fwedu/fwedu_700M_tokenizer_GPTNeoX/tokenized_EleutherAI_gpt-neox-20b/ctx_2048/train"
+vocab_size: 50277
+seq_len: 2048
+sampler: 'stateful_random'
+sampler_seed: 1996
+num_workers: 4
+
+eval: True
+validset_path: "/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/lm/fwedu/fwedu_700M_tokenizer_GPTNeoX/tokenized_EleutherAI_gpt-neox-20b/ctx_2048/valid"
+valid_tokens: 10000
+eval_every_steps: 100
+
+model: 'transformer'
+mlp_class: 'glu'
+expand: '8/3'
+rms_norm: True
+tie_embeddings: False
+torch_compile: True
+
+allow_tf32: True
+
+steps_budget: 122
+
+micro_batch_size: 4
+grad_accumulation_steps: 8
+dtype: 'bfloat16'
+
+optim: 'adamw'
+beta1: 0.9
+beta2: 0.95
+grad_clip: 1.0
+
+scheduler: 'wsd'
+warmup_steps: 0.05
+cooldown_steps: 0.2
+lr_start: 0.0
+lr_end: 0.0
+lr_end_pct: null
+
+log_every_steps: 100
+print_progress: True
+
+use_wandb: False
+wandb_project: null
+wandb_dir: null
+wandb_run_name: null
+
+exp_name: 'neps_hpo_search'
+out_dir: '/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/checkpoints/hpo'
+over_write: True
+
+resume: False
+resume_step: null
+resume_exp_name: null
+
+save_last_checkpoint: False
+save_intermediate_checkpoints: False
+save_every_steps: null
+
+
+# NePS Search Space Definition
+# Define the hyperparameters you want NePS to search over.
+# Supported types:
+#   - float: continuous values (use 'log: true' for log-scale)
+#   - int: integer values
+#   - categorical: discrete choices
+#   - constant: fixed value (useful for ablations)
+#
+# Each parameter defined here will OVERRIDE the corresponding value
+# in the base config above during training.
+
+neps_search_space:
+  lr:
+    type: float
+    lower: 1.0e-5
+    upper: 1.0e-2
+    log: true
+    default: 3.0e-4 
+
+  weight_decay:
+    type: float
+    lower: 0.01
+    upper: 0.5
+    log: true
+
+  d_model:
+    type: categorical
+    choices: [8, 16, 32, 64]
+    default: 8
+
+  n_layers:
+    type: categorical
+    choices: [1, 2, 4, 8]
+    default: 1
+
+  n_heads:
+    type: categorical
+    choices: [1, 2, 4, 8]
+    default: 1
+
+  beta2:
+    type: float
+    lower: 0.9
+    upper: 0.999
+    log: false
+    default: 0.95

@@ -83,7 +83,7 @@ def _get_docs_boundaries(doc_lengths: List[int], n_chunks: int, max_seq_length: 
 # from tokenized dataset and generate chunks of max_seq_length.
 # NOTE: expected token loss by batched concat_chunk,
 # it truncates leftover tokens that don't fill a full max_seq_length chunk.
-def concat_chunck(examples: Dict[str, List[Any]], max_seq_length) -> Dict[str, List[Any]]:
+def concat_chunk(examples: Dict[str, List[Any]], max_seq_length) -> Dict[str, List[Any]]:
   """Concatenate all texts and split them into chunks of max_seq_length."""
 
   # Concatenate all texts.

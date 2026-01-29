@@ -172,6 +172,7 @@ class TorchEngine(torch.nn.Module):
       num_batches = num_batches_tensor.item()
 
     # calculate average loss
-    avg_loss = total_loss.item() / num_batches.item()
+    # avg_loss = total_loss.item() / num_batches.item()
+    avg_loss = float(total_loss) / float(num_batches)
 
     return avg_loss

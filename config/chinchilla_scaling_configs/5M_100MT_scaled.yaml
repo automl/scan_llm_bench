@@ -1,0 +1,74 @@
+deterministic: False
+seed: 1996
+
+trainset_path: "/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/lm/fwedu/fwedu_700M_tokenizer_GPTNeoX/tokenized_EleutherAI_gpt-neox-20b/ctx_2048/train"
+vocab_size: 50277
+seq_len: 2048
+sampler: 'stateful_random'
+sampler_seed: 1996
+num_workers: 4
+
+eval: True
+validset_path: "/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/lm/fwedu/fwedu_700M_tokenizer_GPTNeoX/tokenized_EleutherAI_gpt-neox-20b/ctx_2048/valid"
+valid_tokens: 99900
+eval_every_steps: 50
+
+model: 'transformer'
+d_model: 128 
+mlp_class: 'glu'
+expand: '8/3'
+n_layers: 3 
+n_heads: 4  
+rms_norm: True
+tie_embeddings: True 
+torch_compile: True
+
+allow_tf32: True
+
+# steps_budget = token_budget / (seq_len * global_batch_size)
+# For 100M tokens with global_batch_size=256, seq_len=2048:
+# 100M / (2048 * 256) = ~191 steps
+steps_budget: 762
+
+
+micro_batch_size: 8
+grad_accumulation_steps: 8
+
+
+dtype: 'bfloat16'
+
+optim: 'adamw'
+fused_optim: True 
+lr: 0.0006  
+weight_decay: 0.1
+beta1: 0.9
+beta2: 0.95
+grad_clip: 1.0
+
+scheduler: 'wsd'
+warmup_steps: 0.05  
+cooldown_steps: 0.2  
+lr_start: 0.0
+lr_end: 0.0
+lr_end_pct: null
+
+log_every_steps: 25
+print_progress: True
+
+
+use_wandb: True  
+wandb_project: 'scan_llm_bench'
+wandb_dir: '/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/wandb'
+wandb_run_name: '5M_100MT_run'
+
+exp_name: '5M_100MT_experiment'
+out_dir: '/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/checkpoints'
+over_write: False 
+
+resume: False
+resume_step: null
+resume_exp_name: null
+
+save_last_checkpoint: True       
+save_intermediate_checkpoints: True
+save_every_steps: 200            
