@@ -102,6 +102,7 @@ def initialize_scheduler(optimizer, cfg):
     )
 
   elif cfg.scheduler == 'wsd':
+    print("Steps budget in scheduler initialization: ", cfg.steps_budget)
     cooldown_start_step = cfg.steps_budget - cooldown_steps
     scheduler = WSD(
       optimizer,

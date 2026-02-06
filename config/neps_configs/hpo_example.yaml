@@ -9,7 +9,7 @@
 deterministic: False
 seed: 1996
 
-trainset_path: "/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/lm/fwedu/fwedu_700M_tokenizer_GPTNeoX/tokenized_EleutherAI_gpt-neox-20b/ctx_2048/train"
+trainset_path: "/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/slimpajama/preprocessed-gpt2/train"
 vocab_size: 50277
 seq_len: 2048
 sampler: 'stateful_random'
@@ -17,38 +17,50 @@ sampler_seed: 1996
 num_workers: 4
 
 eval: True
-validset_path: "/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/lm/fwedu/fwedu_700M_tokenizer_GPTNeoX/tokenized_EleutherAI_gpt-neox-20b/ctx_2048/valid"
-valid_tokens: 10000
-eval_every_steps: 100
+validset_path: "/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/data/data/slimpajama/preprocessed-gpt2/validation"
+valid_tokens: 999900
+eval_every_steps: 500
 
 model: 'transformer'
+d_model: 512
 mlp_class: 'glu'
 expand: '8/3'
+n_layers: 12
+n_heads: 8
 rms_norm: True
-tie_embeddings: False
+tie_embeddings: True
 torch_compile: True
 
 allow_tf32: True
 
-steps_budget: 122
+n_tokens: 1000000000
 
-micro_batch_size: 4
-grad_accumulation_steps: 8
+# For 1B tokens with batch_size=256, seq_len=2048: 1B / (2048 * 256) = ~1907 steps
+steps_budget: 1907
+
+
+micro_batch_size: 16
+grad_accumulation_steps: 16
+
+
 dtype: 'bfloat16'
 
 optim: 'adamw'
+fused_optim: True 
+lr: 3.0e-3 
+weight_decay: 1.0e-1
 beta1: 0.9
 beta2: 0.95
 grad_clip: 1.0
 
 scheduler: 'wsd'
-warmup_steps: 0.05
-cooldown_steps: 0.2
+warmup_steps: 0.05  
+cooldown_steps: 0.2  
 lr_start: 0.0
 lr_end: 0.0
 lr_end_pct: null
 
-log_every_steps: 100
+log_every_steps: 50
 print_progress: True
 
 use_wandb: False
@@ -84,30 +96,38 @@ neps_search_space:
   lr:
     type: float
     lower: 1.0e-5
-    upper: 1.0e-2
+    upper: 1.0e-1
     log: true
-    default: 3.0e-4 
+    default: 3.0e-3
 
   weight_decay:
     type: float
-    lower: 0.01
-    upper: 0.5
+    lower: 1.0e-3
+    upper: 0.2
     log: true
+    default: 1.0e-1
 
   d_model:
     type: categorical
-    choices: [8, 16, 32, 64]
-    default: 8
+    choices: [128, 160, 256, 512, 768, 1024]
+    default: 512
 
   n_layers:
     type: categorical
-    choices: [1, 2, 4, 8]
-    default: 1
+    choices: [4, 8, 12, 16, 24]
+    default: 2
 
   n_heads:
     type: categorical
-    choices: [1, 2, 4, 8]
-    default: 1
+    choices: [ 4, 8, 16]
+    default: 4
+
+  beta1:
+    type: float
+    lower: 0.8
+    upper: 0.99
+    log: false
+    default: 0.9
 
   beta2:
     type: float
@@ -115,3 +135,24 @@ neps_search_space:
     upper: 0.999
     log: false
     default: 0.95
+
+  warmup_steps:
+    type: float
+    lower: 0
+    upper: 0.3
+    log: false
+    default: 0.05
+
+  cooldown_steps: 
+    type: float
+    lower: 0
+    upper: 0.2
+    log: false
+    default: 0.1
+
+  n_tokens:
+    type: int
+    lower: 100000000   # 100M tokens
+    upper: 5000000000  # 5B tokens
+    log: true
+    default: 1000000000  # 1B tokens

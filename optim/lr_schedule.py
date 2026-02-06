@@ -41,10 +41,12 @@ class WarmupCosine(CustomLRSchedule):
 
   def get_lr(self, t):
     """Computes and returns lr(t), where t is the current step."""
+    warmup = max(self.warmup_steps, 1)
     if t <= self.warmup_steps:
-      return self.lr_start + (self.lr_max - self.lr_start) / self.warmup_steps * t
+      return self.lr_start + (self.lr_max - self.lr_start) / warmup * t
     elif t <= self.T:
-      progress = (t - self.warmup_steps) / (self.T - self.warmup_steps)
+      denom = self.T - self.warmup_steps
+      progress = (t - self.warmup_steps) / max(denom, 1)
       return self.lr_end + 0.5 * (self.lr_max - self.lr_end) * (1 + math.cos(math.pi * progress))
     return self.lr_end
 
@@ -71,10 +73,13 @@ class WSD(CustomLRSchedule):
   def get_lr(self, t):
     """Computes and returns lr(t), where t is the current step."""
     if t <= self.warmup_steps:
-      return self.lr_start + (self.lr_max - self.lr_start) / self.warmup_steps * t
+      return self.lr_start + (self.lr_max - self.lr_start) / max(self.warmup_steps, 1) * t
     elif t <= self.cooldown_start_step:
       return self.lr_max
-    return self.lr_max + (self.lr_end - self.lr_max) / self.cooldown_steps * (t - self.cooldown_start_step)
+    elif t >= self.cooldown_start_step + self.cooldown_steps:
+      return self.lr_end  
+    cooldown = max(self.cooldown_steps, 1) 
+    return self.lr_max + (self.lr_end - self.lr_max) / cooldown * (t - self.cooldown_start_step)
 
   def step(self):
     self.iter += 1
@@ -120,7 +125,10 @@ class LinearCooldown(CustomLRSchedule):
     """Computes and returns lr(t), where t is the current step."""
     if t <= self.cooldown_start_step:
       return self.lr_max
-    return self.lr_max + (self.lr_end - self.lr_max) / self.cooldown_steps * (t - self.cooldown_start_step)
+    elif t >= self.cooldown_start_step + self.cooldown_steps:
+      return self.lr_end
+    cooldown = max(self.cooldown_steps, 1)
+    return self.lr_max + (self.lr_end - self.lr_max) / cooldown * (t - self.cooldown_start_step)
 
   def step(self):
     self.iter += 1

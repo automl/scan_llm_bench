@@ -12,21 +12,6 @@ neps_search_space:
     lower: 1e-5
     upper: 1e-2
     log: true  
-
-  d_model:
-    type: int  
-    lower: 128
-    upper: 1024
-  
-  n_layers:
-    type: categorical
-    choices: [4, 6, 8, 12]
-  
-  weight_decay:
-    type: float
-    lower: 0.01
-    upper: 0.3
-    log: false
 ```
 
 Usage:
@@ -161,7 +146,7 @@ def train_with_config(
     **sampled_hyperparams,
 ) -> float:
     """
-    Train a transformer with the given configuration and sampled hyperparameters.
+    Train a model with the given configuration and sampled hyperparameters.
 
     Args:
         base_config: Base configuration dictionary.
@@ -180,9 +165,23 @@ def train_with_config(
     if 'fused_optim' not in config:
         config['fused_optim'] = False
 
+    if 'n_tokens' in config:
+        n_tokens = int(config['n_tokens'])
+        seq_len = config.get('seq_len', 2048)
+        micro_batch = config.get('micro_batch_size', 16)
+        grad_accum = config.get('grad_accumulation_steps', 16)
+        # world_size unknown until pytorch_setup; use 1 for initial config
+        config['steps_budget'] = max(1, n_tokens // (seq_len * micro_batch * grad_accum))
+
     cfg, _ = utils.dict_to_config(config)
 
     rank, world_size, device, master_process = pytorch_setup(cfg)
+
+    if 'n_tokens' in config and world_size >= 1:
+        n_tokens = int(config['n_tokens'])
+        global_batch = cfg.micro_batch_size * cfg.grad_accumulation_steps * world_size
+        steps_budget = max(1, n_tokens // (cfg.seq_len * global_batch))
+        cfg = cfg._replace(steps_budget=steps_budget)
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
 
     if master_process:
@@ -363,7 +362,7 @@ def main():
     parser.add_argument(
         "--root_dir",
         type=str,
-        default="neps_results",
+        default="neps/neps_configs/SlimPajama_1M_20M",
         help="Directory to store NePS results"
     )
     parser.add_argument(

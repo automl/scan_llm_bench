@@ -1,5 +1,6 @@
 from fractions import Fraction
 import wandb
+from models.params_flops import total_training_flops, format_flops
 
 
 def construct_model(cfg):
@@ -38,8 +39,23 @@ def construct_model(cfg):
     n_params_no_embed = model.count_params(non_embedding=True)
     print(f'Number of parameters: {n_params:_}')
     print(f'Number of non-embedding parameters: {n_params_no_embed:_}')
-    if wandb.run is not None:
-      wandb.log({'n_params': n_params, 'n_params_no_embed': n_params_no_embed})
+
+    total_flops = total_training_flops(
+      n_layers=cfg.n_layers,
+      d=cfg.d_model,
+      vocab_size=cfg.vocab_size,
+      seq_len=cfg.seq_len,
+      n_tokens=cfg.n_tokens,
+      mlp_class=cfg.mlp_class,
+      expand=float(Fraction(cfg.expand)),
+    )
+    if cfg.n_tokens < 1e9:
+      print(f"Total Training FLOPs for {cfg.n_tokens:_} tokens:")
+    else:
+      print(f"Total Training FLOPs for {cfg.n_tokens/1e9:.1f}B tokens:")
+    print(f"Calculated FLOPs: {format_flops(total_flops)}")
+    if wandb.run is not None: 
+      wandb.log({'n_params': n_params, 'n_params_no_embed': n_params_no_embed, 'total_training_flops': format_flops(total_flops)})
 
   return model, model_cfg
 
