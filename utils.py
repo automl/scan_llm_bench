@@ -86,7 +86,7 @@ def init_wandb(cfg):
                 'A run with the same config exists. Aborting.')
 
     wandb.init(project=cfg.wandb_project, name=cfg.wandb_run_name,
-               dir=cfg.wandb_dir, config=cfg._asdict())
+               dir=cfg.wandb_dir, config=cfg._asdict(), mode="offline")
 
 
 def log_job_info():

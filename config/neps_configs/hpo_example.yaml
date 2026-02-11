@@ -42,6 +42,14 @@ steps_budget: 1907
 micro_batch_size: 16
 grad_accumulation_steps: 16
 
+# Auto batch size tuning: probe descending micro_batch_size values to find
+# the largest that fits in GPU memory. Set to False to disable.
+auto_batch_size: True
+# Optional explicit list of batch sizes to try (descending order).
+# If not set, auto-generates by halving micro_batch_size down to 1.
+# batch_sizes: [32, 16, 8, 4]
+batch_sizes: null
+
 
 dtype: 'bfloat16'
 
@@ -63,22 +71,22 @@ lr_end_pct: null
 log_every_steps: 50
 print_progress: True
 
-use_wandb: False
-wandb_project: null
-wandb_dir: null
-wandb_run_name: null
+use_wandb: True  
+wandb_project: 'scan_llm_bench'
+wandb_dir: '/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/wandb'
+wandb_run_name: 'NePS_Slimapajama'
 
-exp_name: 'neps_hpo_search'
-out_dir: '/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/checkpoints/hpo'
-over_write: True
+exp_name: 'NePS_Slimapajama'
+out_dir: '/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/checkpoints'
+over_write: False 
 
 resume: False
 resume_step: null
 resume_exp_name: null
 
-save_last_checkpoint: False
-save_intermediate_checkpoints: False
-save_every_steps: null
+save_last_checkpoint: True       
+save_intermediate_checkpoints: True
+save_every_steps: 2000  
 
 
 # NePS Search Space Definition
@@ -109,31 +117,34 @@ neps_search_space:
 
   d_model:
     type: categorical
-    choices: [128, 160, 256, 512, 768, 1024]
-    default: 512
+    choices: [16, 32, 64, 96, 128, 160, 256, 384, 512, 640, 768, 896, 1024]
+    default: 64  # Prior for lower region sampling (index 2 in choices)
+    prior_confidence: "medium"
 
   n_layers:
     type: categorical
-    choices: [4, 8, 12, 16, 24]
-    default: 2
+    choices: [1, 2, 4, 8, 12, 16, 24]
+    default: 2  # Prior for lower region sampling (index 1 in choices)
+    prior_confidence: "medium"
 
   n_heads:
     type: categorical
-    choices: [ 4, 8, 16]
-    default: 4
+    choices: [1, 2, 4, 8, 16]
+    default: 2  # Prior for lower region sampling (index 1 in choices)
+    prior_confidence: "medium"
 
   beta1:
     type: float
     lower: 0.8
     upper: 0.99
-    log: false
+    log: true
     default: 0.9
 
   beta2:
     type: float
     lower: 0.9
     upper: 0.999
-    log: false
+    log: true
     default: 0.95
 
   warmup_steps:
@@ -152,7 +163,7 @@ neps_search_space:
 
   n_tokens:
     type: int
-    lower: 100000000   # 100M tokens
+    lower: 20000000   # 20M tokens
     upper: 5000000000  # 5B tokens
     log: true
-    default: 1000000000  # 1B tokens
+    default: 100000000  # 100M tokens

@@ -4,7 +4,10 @@ from models.params_flops import total_training_flops, format_flops
 
 
 def construct_model(cfg):
-  """Initalize a model from config. Counts parameters."""
+  """Initialize a model from config. Counts parameters.
+  Returns (model, model_cfg) and optionally total_training_flops if computable.
+  """
+  compute_flops = None  # Total training FLOPs (for report)
 
   # Transformer++
   if cfg.model == 'transformer':
@@ -34,7 +37,7 @@ def construct_model(cfg):
   else:
     raise NotImplementedError(f'Not implemented model: {cfg.model}.')
 
-  if hasattr(model, 'count_params'):
+  if hasattr(model, 'count_params') and hasattr(cfg, 'n_tokens'):
     n_params = model.count_params(non_embedding=False)
     n_params_no_embed = model.count_params(non_embedding=True)
     print(f'Number of parameters: {n_params:_}')
@@ -49,6 +52,7 @@ def construct_model(cfg):
       mlp_class=cfg.mlp_class,
       expand=float(Fraction(cfg.expand)),
     )
+    compute_flops = total_flops
     if cfg.n_tokens < 1e9:
       print(f"Total Training FLOPs for {cfg.n_tokens:_} tokens:")
     else:
@@ -57,7 +61,7 @@ def construct_model(cfg):
     if wandb.run is not None: 
       wandb.log({'n_params': n_params, 'n_params_no_embed': n_params_no_embed, 'total_training_flops': format_flops(total_flops)})
 
-  return model, model_cfg
+  return model, model_cfg, compute_flops
 
 
 def get_param_groups(model, weight_decay):

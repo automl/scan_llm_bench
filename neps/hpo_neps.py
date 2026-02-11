@@ -21,6 +21,7 @@ Usage:
 import argparse
 import logging
 import os
+import random
 import sys
 from collections import defaultdict
 from functools import partial
@@ -192,7 +193,7 @@ def train_with_config(
 
     trainloader, validloader = get_dataloaders(cfg)
 
-    model, _ = construct_model(cfg)
+    model, _, _ = construct_model(cfg)
 
     ckpt = None
     engine = TorchEngine(model, cfg, device, local_rank, ckpt)
@@ -264,12 +265,44 @@ def train_with_config(
     return final_valid_loss
 
 
-def create_evaluate_pipeline(base_config: dict):
+def adjust_n_heads_for_rotary(d_model: int, n_heads: int, available_heads: list) -> int:
+    """
+    Adjust n_heads so that d_model % n_heads == 0 for rotary embeddings.
+    
+    Args:
+        d_model: Model dimension.
+        n_heads: Sampled number of heads.
+        available_heads: List of valid head counts to choose from.
+    
+    Returns:
+        Adjusted n_heads that divides d_model evenly.
+    """
+    if d_model % n_heads == 0:
+        return n_heads
+    
+    valid_heads = [h for h in available_heads if d_model % h == 0]
+    
+    if not valid_heads:
+        valid_heads = [h for h in range(1, d_model + 1) if d_model % h == 0]
+    
+    closest = min(valid_heads, key=lambda h: abs(h - n_heads))
+    
+    if closest != n_heads:
+        logging.info(
+            f"Adjusted n_heads from {n_heads} to {closest} "
+            f"(d_model={d_model} requires d_model % n_heads == 0)"
+        )
+    
+    return closest
+
+
+def create_evaluate_pipeline(base_config: dict, search_space_def: dict):
     """
     Create an evaluation function for NePS that uses the base config.
 
     Args:
         base_config: Base configuration dictionary.
+        search_space_def: Search space definition for extracting valid choices.
 
     Returns:
         A function that NePS can call to evaluate a configuration.
@@ -286,6 +319,32 @@ def create_evaluate_pipeline(base_config: dict):
             Validation loss (objective to minimize).
         """
         try:
+            if 'd_model' in hyperparams and 'n_heads' in hyperparams:
+                d_model = hyperparams['d_model']
+                n_heads = hyperparams['n_heads']
+                
+                available_heads = search_space_def.get('n_heads', {}).get('choices', [1, 2, 4, 8, 16])
+                
+                adjusted_heads = adjust_n_heads_for_rotary(d_model, n_heads, available_heads)
+                hyperparams['n_heads'] = adjusted_heads
+            
+            full_config = base_config.copy()
+            full_config.update(hyperparams)
+
+            n_tokens = full_config.get('n_tokens')
+            if n_tokens is not None:
+                n_tokens = int(n_tokens)
+                frac = random.uniform(0.001, 0.005)
+                full_config['valid_tokens'] = max(1, int(n_tokens * frac))
+
+            config_path = Path(pipeline_directory) / 'config.yaml'
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(config_path, 'w') as f:
+                yaml.dump(full_config, f, default_flow_style=False, sort_keys=False)
+            
+            logging.info(f"Saved full config to {config_path}")
+            
             # Only sample configurations for now
             return None
             loss = train_with_config(
@@ -340,7 +399,7 @@ def run_hpo(
     if optimizer is neps.algorithms.random_search and has_priors:
         optimizer = partial(optimizer, use_priors=True)
 
-    evaluate_fn = create_evaluate_pipeline(base_config)
+    evaluate_fn = create_evaluate_pipeline(base_config, search_space_def)
 
     neps.run(
         evaluate_pipeline=evaluate_fn,
@@ -362,7 +421,7 @@ def main():
     parser.add_argument(
         "--root_dir",
         type=str,
-        default="neps/neps_configs/SlimPajama_1M_20M",
+        default="neps/neps_configs/Neps_Test",
         help="Directory to store NePS results"
     )
     parser.add_argument(
