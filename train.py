@@ -221,7 +221,7 @@ def main(_):
 
     # Probe batch size: find max micro_batch_size that fits, then set grad_accum from model size.
     # Target global batch from param count: <5M→16, 5–20M→64, 20–70M→128, 70M+→256.
-    if master_process and torch.cuda.is_available():
+    if torch.cuda.is_available():
         model_on_device = model.to(device)
         micro_bs, _ = get_batch_config(
             cfg, model_on_device, device, world_size)
