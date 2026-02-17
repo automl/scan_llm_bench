@@ -106,64 +106,61 @@ neps_search_space:
     lower: 1.0e-5
     upper: 1.0e-1
     log: true
-    default: 3.0e-3
+    # default: 3.0e-3
 
   weight_decay:
     type: float
     lower: 1.0e-3
     upper: 0.2
     log: true
-    default: 1.0e-1
+    # default: 1.0e-1
 
   d_model:
-    type: categorical
-    choices: [16, 32, 64, 96, 128, 160, 256, 384, 512, 640, 768, 896, 1024]
-    default: 64  # Prior for lower region sampling (index 2 in choices)
-    prior_confidence: "medium"
+    type: int
+    lower: 1
+    upper: 16
 
   n_layers:
-    type: categorical
-    choices: [1, 2, 4, 8, 12, 16, 24]
-    default: 2  # Prior for lower region sampling (index 1 in choices)
-    prior_confidence: "medium"
+    type: int
+    lower: 1
+    upper: 24
 
   n_heads:
-    type: categorical
-    choices: [1, 2, 4, 8, 16]
-    default: 2  # Prior for lower region sampling (index 1 in choices)
-    prior_confidence: "medium"
+    type: int
+    lower: 1
+    upper: 8
 
   beta1:
     type: float
     lower: 0.8
     upper: 0.99
     log: true
-    default: 0.9
+    # default: 0.9
 
   beta2:
     type: float
     lower: 0.9
     upper: 0.999
     log: true
-    default: 0.95
+    # default: 0.95
 
   warmup_steps:
     type: float
     lower: 0
     upper: 0.3
     log: false
-    default: 0.05
+    # default: 0.05
 
   cooldown_steps: 
     type: float
     lower: 0
     upper: 0.2
     log: false
-    default: 0.1
+    # default: 0.1
 
   n_tokens:
     type: int
-    lower: 20000000   # 20M tokens
+    lower: 50000000   # 50M tokens
     upper: 5000000000  # 5B tokens
     log: true
-    default: 100000000  # 100M tokens
+    # default: 100000000  # 100M tokens

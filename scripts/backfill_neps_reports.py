@@ -150,7 +150,7 @@ def build_report(ckpt_config_path, metrics_path, compute_flops):
     global_batch = (micro_batch * grad_accum) if micro_batch else None
 
     result = {
-        'objective_to_minimize': final.get('train/loss'),
+        'objective_to_minimize': final.get('valid/loss'),
         'cost': compute_flops,
         'learning_curve': metrics_raw.get('lr'),
         'info_dict': {
@@ -158,6 +158,7 @@ def build_report(ckpt_config_path, metrics_path, compute_flops):
             'train_loss': final.get('train/loss'),
             'valid_loss': final.get('valid/loss'),
             'n_tokens': n_tokens,
+            'n_data': n_tokens,
             'micro_batch_size': micro_batch,
             'global_batch_size': global_batch,
             'final_step': final.get('step'),

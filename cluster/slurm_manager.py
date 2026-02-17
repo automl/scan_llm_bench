@@ -10,7 +10,7 @@ import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -41,6 +41,13 @@ CLUSTER_CONFIGS: dict[str, ClusterConfig] = {
                     """,
     ),
 }
+
+
+class ModelSize(Enum):
+    """Model size for probe_batch_size script (tiny=16, small=64, medium=256)."""
+    TINY = "tiny"
+    SMALL = "small"
+    MEDIUM = "medium"
 
 
 class SlurmManager:
@@ -79,7 +86,8 @@ class SlurmManager:
 
     def _python_path_setup(self) -> str:
         return f"""
-                export PYTHONPATH="${{PWD}}:${{PYTHONPATH}}"
+                export PATH="{self.root_dir}/bin:$PATH"
+                export PYTHONPATH="{self.workspace_dir}:${{PYTHONPATH}}"
                 cd "{self.workspace_dir}"
                 """
 
@@ -281,6 +289,125 @@ class SlurmManager:
         Path(path).write_text(script)
         return Path(path)
 
+    def build_plot_script(
+        self,
+        neps_configs_dir: str,
+        num_gpus: int = 1,
+        out_gpu_hours: Optional[str] = None,
+        out_dist: Optional[str] = None,
+        out_mfu_distribution: Optional[str] = None,
+        out_flops_vs_mfu: Optional[str] = None,
+        flops_per_gpu_hour: Optional[float] = None,
+        no_log_scale: bool = False,
+        job_name: Optional[str] = None,
+        save_to: Optional[Path] = None,
+    ) -> Path:
+        """Build a Slurm script to run plot_utils.py (FLOPs distribution, GPU hours, MFU plots)."""
+
+        cmd_parts = [
+            "python plot_utils.py",
+            f'--neps_configs_dir "{neps_configs_dir}"',
+            f"--num-gpus {num_gpus}",
+        ]
+        if out_gpu_hours:
+            cmd_parts.append(f'--out-gpu-hours "{out_gpu_hours}"')
+        if out_dist:
+            cmd_parts.append(f'--out-dist "{out_dist}"')
+        if out_mfu_distribution:
+            cmd_parts.append(f'--out-mfu-distribution "{out_mfu_distribution}"')
+        if out_flops_vs_mfu:
+            cmd_parts.append(f'--out-flops-vs-mfu "{out_flops_vs_mfu}"')
+        if flops_per_gpu_hour is not None:
+            cmd_parts.append(f"--flops-per-gpu-hour {flops_per_gpu_hour}")
+        if no_log_scale:
+            cmd_parts.append("--no-log-scale")
+        cmd = " \\\n    ".join(cmd_parts)
+
+        name = job_name or self.job_name
+        script = f"""#!/bin/bash
+                    #SBATCH --partition={self.partition}
+                    #SBATCH --job-name={name}
+                    #SBATCH --mem=2GB
+                    {self._account_line()}#SBATCH --output=logs/%x-%j.out
+                    #SBATCH --error=logs/%x-%j.err
+
+                    {self._cluster_cfg.load_env}
+
+                    mkdir -p logs
+                    echo "Workingdir: $PWD"
+                    echo "Started at $(date)"
+
+                    {self._python_path_setup()}
+
+                    {cmd}
+                    """
+        path = save_to or (self.root_dir / "plot.sh")
+        Path(path).write_text(script)
+        return Path(path)
+
+    def build_sample_neps_configs_script(
+        self,
+        config: str,
+        root_dir: str = "neps/neps_configs/Neps_Test",
+        max_evaluations: int = 50,
+        optimizer: str = "random",
+        gpus: int = 1,
+        time_hours: Optional[int] = None,
+        job_name: Optional[str] = None,
+        save_to: Optional[Path] = None,
+        **extra_args: Any,
+    ) -> Path:
+        """Build a Slurm script to sample NePS configs via hpo_neps.py (no training, just config sampling)."""
+
+        opt_choices = ("bo", "random", "regularized_evolution")
+        if optimizer not in opt_choices:
+            raise ValueError(f"optimizer must be one of {opt_choices}, got {optimizer!r}")
+
+        cmd_parts = [
+            "python -u neps/hpo_neps.py",
+            f'--config "{config}"',
+            f'--root_dir "{root_dir}"',
+            f"--max_evaluations {max_evaluations}",
+            f"--optimizer {optimizer}",
+        ]
+        for k, v in extra_args.items():
+            if v is None:
+                continue
+            arg = k.replace("_", "-")
+            if isinstance(v, bool):
+                if v:
+                    cmd_parts.append(f"--{arg}")
+            else:
+                cmd_parts.append(f'--{arg} "{v}"' if isinstance(v, str) and " " in v else f"--{arg} {v}")
+        cmd = " \\\n    ".join(cmd_parts)
+
+        name = job_name or self.job_name
+        time_s = (time_hours or self.time_hours) or 4
+        script = f"""#!/bin/bash
+                    #SBATCH --partition={self.partition}
+                    #SBATCH --job-name={name}
+                    #SBATCH --gres=gpu:{gpus}
+                    #SBATCH --cpus-per-task={self.cpus_per_task}
+                    #SBATCH --mem={self.mem_gb}GB
+                    #SBATCH --time={time_s}:00:00
+                    {self._account_line()}#SBATCH --output=logs/neps_sample/%x-%j.out
+                    #SBATCH --error=logs/neps_sample/%x-%j.err
+
+                    {self._cluster_cfg.load_env}
+
+                    mkdir -p logs/neps_sample
+                    echo "Workingdir: $PWD"
+                    echo "Started at $(date)"
+                    echo "Sampling NePS configs: config={config}, root_dir={root_dir}, max_evaluations={max_evaluations}"
+
+                    {self._python_path_setup()}
+
+                    {cmd}
+                    """
+        path = save_to or (self.root_dir / "sample_neps_configs.sh")
+        Path(path).write_text(script)
+        return Path(path)
+
     def submit_job(self, script_path: Optional[Path] = None, wait: bool = False) -> Optional[int]:
         """Submit the Slurm script using sbatch."""
         path = script_path or self.script_path
@@ -309,9 +436,23 @@ class SlurmManager:
 
 
 def main():
-    """Example: generate and optionally submit a Slurm script."""
+    """Generate and optionally submit a Slurm script. Pass root_dir and workspace_dir from the terminal."""
     import argparse
     p = argparse.ArgumentParser()
+    p.add_argument(
+        "--root-dir",
+        dest="root_dir",
+        type=Path,
+        default=Path.cwd(),
+        help="Directory where the Python interpreter lives (e.g. conda/venv prefix with bin/python); used to select Python version.",
+    )
+    p.add_argument(
+        "--workspace-dir",
+        dest="workspace_dir",
+        type=Path,
+        default=Path.cwd(),
+        help="Directory where project files are; script will cd here and set PYTHONPATH.",
+    )
     p.add_argument(
         "--base_config", default="/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/config/chinchilla_scaling_configs/50M_1BT_scaled.yaml")
     p.add_argument(
@@ -319,16 +460,23 @@ def main():
     p.add_argument("--start_config", type=int, default=17)
     p.add_argument("--end_config", type=int, default=50)
     p.add_argument(
-        "--mode", choices=["sequential", "array", "single", "probe"], default="sequential")
+        "--mode",
+        choices=["sequential", "array", "single", "probe", "plot", "neps_sample"],
+        default="sequential",
+    )
     p.add_argument("--submit", action="store_true")
     p.add_argument("--out", default=None)
+    p.add_argument("--neps_configs_dir", default=None, help="For plot mode: NePS configs dir")
+    p.add_argument("--num_gpus", type=int, default=1, help="For plot mode: num-gpus")
+    p.add_argument("--out_gpu_hours", default=None, help="For plot mode: output path for GPU hours plot")
+    p.add_argument("--max_evaluations", type=int, default=50, help="For neps_sample: max_evaluations")
+    p.add_argument("--optimizer", default="random", help="For neps_sample: bo|random|regularized_evolution")
     args = p.parse_args()
 
-    root = Path("/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench")
     mgr = SlurmManager(
         job_name="Train_SlimPajama_50M_1BT_NePS",
-        root_dir=root,
-        workspace_dir=str(root),
+        root_dir=args.root_dir,
+        workspace_dir=args.workspace_dir,
     )
 
     out_path = Path(args.out) if args.out else None
@@ -359,10 +507,27 @@ def main():
             save_neps_report=True,
             save_to=out_path,
         )
-    else:  # probe
+    elif args.mode == "probe":
         path = mgr.build_probe_batch_size_script(
             config_path=args.base_config,
             model_size=ModelSize.MEDIUM,
+            save_to=out_path,
+        )
+    elif args.mode == "plot":
+        if not args.neps_configs_dir or not args.out_gpu_hours:
+            p.error("--mode plot requires --neps_configs_dir and --out_gpu_hours")
+        path = mgr.build_plot_script(
+            neps_configs_dir=args.neps_configs_dir,
+            num_gpus=args.num_gpus,
+            out_gpu_hours=args.out_gpu_hours,
+            save_to=out_path,
+        )
+    else:  # neps_sample
+        path = mgr.build_sample_neps_configs_script(
+            config=args.base_config,
+            root_dir=args.neps_results,
+            max_evaluations=args.max_evaluations,
+            optimizer=args.optimizer,
             save_to=out_path,
         )
 

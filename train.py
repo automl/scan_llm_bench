@@ -4,6 +4,7 @@ from absl import app, flags
 from collections import defaultdict
 import copy
 import gc
+import json
 import os
 import time
 import yaml
@@ -21,8 +22,7 @@ from models.params_flops import format_flops
 from engine import TorchEngine
 from scripts.probe_batch_size import (
     get_batch_config,
-    get_target_global_batch_for_param_count,
-    _model_param_count,
+    get_target_global_batch_for_tokens
 )
 import math
 
@@ -38,160 +38,12 @@ flags.DEFINE_integer(
     'Config index for sequential NePS runs (unique checkpoint path per config).')
 flags.DEFINE_string('neps_root_dir', None,
                     'Path to directory where NePS report will be saved.')
+flags.DEFINE_string('neps_report_dir', None,
+                    'Alias for neps_root_dir (used by cluster scripts).')
 flags.DEFINE_bool(
     'save_neps_report', False,
     'If True and config_overrides is set, save report.yaml to the NePS config directory.')
 FLAGS = flags.FLAGS
-
-
-# def _get_batch_sizes(cfg):
-#     """Generate descending list of micro_batch_size candidates to try.
-#     If cfg has a 'batch_sizes' field (list), use it directly.
-#     Otherwise, halve cfg.micro_batch_size down to 1."""
-#     if hasattr(cfg, 'batch_sizes') and cfg.batch_sizes is not None:
-#         sizes = sorted(cfg.batch_sizes, reverse=True)
-#         return [s for s in sizes if s >= 1]
-#     # Auto-generate by halving
-#     sizes = []
-#     bs = cfg.micro_batch_size
-#     while bs >= 1:
-#         sizes.append(bs)
-#         bs //= 2
-#     return sizes
-
-
-# def _is_oom_error(exc):
-#     """Check if an exception is a CUDA out-of-memory error."""
-#     if isinstance(exc, torch.cuda.OutOfMemoryError):
-#         return True
-#     if isinstance(exc, RuntimeError) and 'out of memory' in str(exc).lower():
-#         return True
-#     return False
-
-
-# def _cleanup_gpu():
-#     """Free GPU memory after a failed probe attempt."""
-#     gc.collect()
-#     if torch.cuda.is_available():
-#         torch.cuda.empty_cache()
-#         torch.cuda.reset_peak_memory_stats()
-
-
-# def find_working_batch_size(cfg, model, device, local_rank, ckpt, world_size, n_probe_steps=3):
-#     """
-#     Probe descending micro_batch_size values to find the largest that fits in GPU memory.
-
-#     Runs a few forward+backward steps with each candidate. On OOM, cleans up and tries
-#     the next smaller size. Model state is saved before probing and restored after.
-
-#     Args:
-#         cfg: Config namedtuple.
-#         model: The model (NOT yet compiled, NOT yet wrapped in DDP).
-#         device: Device string (e.g. 'cuda:0').
-#         local_rank: Local rank for DDP.
-#         ckpt: Checkpoint dict or None.
-#         world_size: Number of processes.
-#         n_probe_steps: Number of micro-steps to run for each probe.
-
-#     Returns:
-#         int: The largest working micro_batch_size.
-#     """
-#     batch_sizes = _get_batch_sizes(cfg)
-#     print_master(f'Auto batch size tuning: trying {batch_sizes}')
-
-#     # Save model state before probing so we can restore it after
-#     model_state = copy.deepcopy(model.state_dict())
-
-#     working_bs = None
-
-#     for bs in batch_sizes:
-#         print_master(f'  Probing micro_batch_size={bs}...')
-
-#         # Restore clean model state for each probe
-#         model.load_state_dict(model_state)
-#         model_on_device = model.to(device)
-
-#         # Build a temporary dataloader with this batch size
-#         probe_cfg = cfg._replace(
-#             micro_batch_size=bs,
-#             torch_compile=False,  # Don't compile during probing
-#         )
-#         try:
-#             probe_loader, _ = get_dataloaders(probe_cfg)
-#         except Exception as e:
-#             print_master(f'  Failed to build dataloader with bs={bs}: {e}')
-#             _cleanup_gpu()
-#             continue
-
-#         # Build a lightweight engine (no compile, no checkpoint restore)
-#         # We use a minimal forward+backward to test memory
-#         try:
-#             from torch.nn import CrossEntropyLoss
-#             from contextlib import nullcontext
-
-#             device_type = 'cuda' if 'cuda' in device else 'cpu'
-#             ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[cfg.dtype]
-#             ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
-#             criterion = CrossEntropyLoss()
-
-#             # Run probe steps
-#             probe_iter = iter(probe_loader)
-#             for probe_step in range(n_probe_steps):
-#                 batch = next(probe_iter)
-#                 inputs = batch['input_ids'][:, :cfg.seq_len]
-#                 targets = batch['input_ids'][:, 1:(cfg.seq_len + 1)]
-#                 if 'cuda' in device:
-#                     inputs = inputs.to(device, non_blocking=True)
-#                     targets = targets.to(device, non_blocking=True)
-
-#                 with ctx:
-#                     output = model_on_device(inputs, None)
-#                     logits = getattr(output, 'logits', output)
-#                     loss = criterion(logits.view(-1, logits.size(-1)), targets.view(-1))
-
-#                 loss.backward()
-#                 model_on_device.zero_grad(set_to_none=True)
-
-#             # Success: this batch size works
-#             print_master(f'  micro_batch_size={bs} fits in memory.')
-#             working_bs = bs
-#             break
-
-#         except Exception as e:
-#             if _is_oom_error(e):
-#                 print_master(f'  micro_batch_size={bs} OOM. Trying smaller...')
-#             else:
-#                 print_master(f'  micro_batch_size={bs} failed with non-OOM error: {e}. Trying smaller...')
-#         finally:
-#             # Clean up probe resources
-#             del probe_loader
-#             model_on_device.cpu()
-#             _cleanup_gpu()
-
-#     # Restore original model state (clean, on CPU)
-#     model.load_state_dict(model_state)
-#     del model_state
-
-#     # Synchronize chosen batch size across ranks in DDP.
-#     # Each rank finds its own largest working bs; we take the MIN across all ranks
-#     # so every rank uses a size that fits on the most memory-constrained GPU.
-#     if dist.is_initialized():
-#         # Use 0 to signal "all sizes OOM" so MIN picks the smallest positive value
-#         local_bs = working_bs if working_bs is not None else 0
-#         bs_tensor = torch.tensor([local_bs], dtype=torch.int64, device=device)
-#         dist.all_reduce(bs_tensor, op=dist.ReduceOp.MIN)
-#         working_bs = bs_tensor.item()
-#         # Move the tensor back and free GPU memory
-#         del bs_tensor
-#         _cleanup_gpu()
-
-#     if working_bs is None or working_bs == 0:
-#         raise RuntimeError(
-#             f'All batch sizes {batch_sizes} caused OOM on at least one rank. '
-#             'Reduce model size or use a GPU with more memory.'
-#         )
-
-#     return working_bs
 
 
 def main(_):
@@ -218,6 +70,11 @@ def main(_):
 
     # Model (construct before DDP/compile so we can probe batch sizes)
     model, _, compute_flops = construct_model(cfg)
+    n_params = (
+        model.count_params(non_embedding=False)
+        if hasattr(model, 'count_params')
+        else sum(p.numel() for p in model.parameters())
+    )
 
     # Probe batch size: find max micro_batch_size that fits, then set grad_accum from model size.
     # Target global batch from param count: <5M→16, 5–20M→64, 20–70M→128, 70M+→256.
@@ -230,8 +87,7 @@ def main(_):
                 [micro_bs], dtype=torch.int64, device=device)
             dist.all_reduce(micro_bs_t, op=dist.ReduceOp.MIN)
             micro_bs = micro_bs_t.item()
-        n_params = _model_param_count(model)
-        target_global = get_target_global_batch_for_param_count(n_params)
+        target_global = get_target_global_batch_for_tokens(cfg.n_tokens)
         grad_accum = max(
             1, (target_global + micro_bs * world_size -
                 1) // (micro_bs * world_size)
@@ -240,7 +96,7 @@ def main(_):
                            grad_accumulation_steps=grad_accum)
         print_master(
             f'Probe batch size: micro_batch_size={micro_bs}, grad_accumulation_steps={grad_accum} '
-            f'(model params={n_params:,}, target global batch={target_global})'
+            f'(Token Budget={cfg.n_tokens:,}, target global batch={target_global})'
         )
         # Clear GPU state after probe so training (DDP, torch.compile, optimizer) starts
         # with a clean allocation pattern and avoids fragmentation OOMs.
@@ -265,6 +121,12 @@ def main(_):
         engine.scheduler.cooldown_steps
     )
 
+    try:
+        # Get one evaluation at least at the end of the training
+        if steps_budget > cfg.eval_every_steps:
+            cfg = cfg._replace(eval_every_steps=steps_budget)
+    except AttributeError:
+        pass
     micro_step_budget = steps_budget * cfg.grad_accumulation_steps
     if micro_step_budget > len(trainloader):
         raise ValueError('trainloader too short!')
@@ -279,6 +141,8 @@ def main(_):
     # Bookkeeping
     metrics = defaultdict(list)
     train_loss_array = []
+    # all_train_losses = []  # per-batch training loss (saved to JSON in config_dir)
+    # all_lrs = []  # per-batch learning rate (saved to JSON in config_dir)
     training_start_time = time.time()
     last_train_loss = None
     last_valid_loss = None
@@ -295,6 +159,12 @@ def main(_):
         last_train_loss = train_loss.item() if hasattr(
             train_loss, 'item') else float(train_loss)
         train_loss_array.append(train_loss)
+        # all_train_losses.append(last_train_loss)
+        # try:
+        #     lr = engine.optimizer.param_groups[0]["lr"]
+        # except (IndexError, KeyError):
+        #     lr = None
+        # all_lrs.append(lr)
 
         # Eval
         valid_loss = None
@@ -318,40 +188,67 @@ def main(_):
     if master_process and cfg.save_last_checkpoint:
         save_checkpoint(step, model, engine, cfg, metrics)
 
+    # Final validation so objective_to_minimize can use eval loss (all ranks for DDP reduce)
+    if FLAGS.save_neps_report and cfg.eval and validloader is not None:
+        print_master('Final validation for NePS report')
+        last_valid_loss = engine.eval(validloader)
+
     # Save NePS report if requested
     if master_process and FLAGS.save_neps_report:
-        training_duration = time.time() - training_start_time
-        global_batch = cfg.micro_batch_size * cfg.grad_accumulation_steps * world_size
-        result = {
-            'objective_to_minimize': last_train_loss,
-            'cost': compute_flops,
-            'info_dict': {
-                'duration': training_duration,
-                'compute_formatted': format_flops(compute_flops) if compute_flops else None,
-                'train_loss': last_train_loss,
-                'valid_loss': last_valid_loss,
-                'n_tokens': getattr(cfg, 'n_tokens', None),
-                'micro_batch_size': cfg.micro_batch_size,
-                'global_batch_size': global_batch,
-                'time_duration_seconds': training_duration,
-                'final_step': step,
-                'steps_budget': steps_budget,
+        neps_dir = FLAGS.neps_report_dir or FLAGS.neps_root_dir
+        if not neps_dir:
+            print_master('Cannot save NePS report: neither neps_root_dir nor neps_report_dir set')
+        else:
+            training_duration = time.time() - training_start_time
+            global_batch = cfg.micro_batch_size * cfg.grad_accumulation_steps * world_size
+            n_data = getattr(cfg, 'n_tokens', None)
+            objective = last_valid_loss if last_valid_loss is not None else last_train_loss
+            result = {
+                'objective_to_minimize': objective,
+                'cost': compute_flops,
+                'evaluation_duration': training_duration,
+                'info_dict': {
+                    'duration': training_duration,
+                    'compute_formatted': format_flops(compute_flops) if compute_flops else None,
+                    'train_loss': last_train_loss,
+                    'valid_loss': last_valid_loss,
+                    'n_data': n_data,
+                    'n_params': n_params,
+                    'flops': compute_flops,
+                    'micro_batch_size': cfg.micro_batch_size,
+                    'global_batch_size': global_batch,
+                    'time_duration_seconds': training_duration,
+                    'final_step': step,
+                    'steps_budget': steps_budget,
+                }
             }
-        }
 
-        try:
-            from neps import save_pipeline_results
-            print(f'Saving NePS report to {FLAGS.neps_root_dir}')
-            print(f'Result: {result}')
-            print(f'Pipeline ID: {FLAGS.config_number}')
-            save_pipeline_results(
-                user_result=result,
-                pipeline_id=FLAGS.config_number,
-                root_directory=Path(FLAGS.neps_root_dir),
-            )
-            print_master(f'Saved NePS report to {FLAGS.neps_root_dir}')
-        except Exception as e:
-            print_master(f'Failed to save NePS report: {e}')
+            try:
+                from neps import save_pipeline_results
+                print(f'Result: {result}')
+                print(f'Pipeline ID: {FLAGS.config_number}')
+                save_pipeline_results(
+                    user_result=result,
+                    pipeline_id=FLAGS.config_number,
+                    root_directory=Path(neps_dir),
+                )
+                print_master(f'Saved NePS report to {neps_dir}')
+
+                # Save per-batch training_loss and learning_rate to JSON in config_dir (not in report.yaml)
+                # config_dir = Path(neps_dir) / "configs" / f"config_{FLAGS.config_number}"
+
+                # Values already saved in metrics.json in checkpoint
+                # config_dir.mkdir(parents=True, exist_ok=True)
+                # curve_path = config_dir / "training_curve.json"
+                # with open(curve_path, "w") as f:
+                #     json.dump(
+                #         {"training_loss": all_train_losses, "learning_rate": all_lrs},
+                #         f,
+                #         indent=2,
+                #     )
+                # print_master(f'Saved training curve to {curve_path}')
+            except Exception as e:
+                print_master(f'Failed to save NePS report: {e}')
 
     # DDP slaughtering
     destroy_ddp()

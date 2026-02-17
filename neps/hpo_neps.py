@@ -38,6 +38,7 @@ from checkpoint_utils import save_checkpoint
 from data import get_dataloaders
 from engine import TorchEngine
 from models import construct_model
+from scripts.probe_batch_size import get_target_global_batch_for_tokens
 from torch_utils import destroy_ddp, pytorch_setup
 from utils import print_master
 
@@ -172,7 +173,8 @@ def train_with_config(
         micro_batch = config.get('micro_batch_size', 16)
         grad_accum = config.get('grad_accumulation_steps', 16)
         # world_size unknown until pytorch_setup; use 1 for initial config
-        config['steps_budget'] = max(1, n_tokens // (seq_len * micro_batch * grad_accum))
+        config['steps_budget'] = max(
+            1, n_tokens // (seq_len * micro_batch * grad_accum))
 
     cfg, _ = utils.dict_to_config(config)
 
@@ -268,31 +270,31 @@ def train_with_config(
 def adjust_n_heads_for_rotary(d_model: int, n_heads: int, available_heads: list) -> int:
     """
     Adjust n_heads so that d_model % n_heads == 0 for rotary embeddings.
-    
+
     Args:
         d_model: Model dimension.
         n_heads: Sampled number of heads.
         available_heads: List of valid head counts to choose from.
-    
+
     Returns:
         Adjusted n_heads that divides d_model evenly.
     """
     if d_model % n_heads == 0:
         return n_heads
-    
+
     valid_heads = [h for h in available_heads if d_model % h == 0]
-    
+
     if not valid_heads:
         valid_heads = [h for h in range(1, d_model + 1) if d_model % h == 0]
-    
+
     closest = min(valid_heads, key=lambda h: abs(h - n_heads))
-    
+
     if closest != n_heads:
         logging.info(
             f"Adjusted n_heads from {n_heads} to {closest} "
             f"(d_model={d_model} requires d_model % n_heads == 0)"
         )
-    
+
     return closest
 
 
@@ -320,14 +322,24 @@ def create_evaluate_pipeline(base_config: dict, search_space_def: dict):
         """
         try:
             if 'd_model' in hyperparams and 'n_heads' in hyperparams:
-                d_model = hyperparams['d_model']
-                n_heads = hyperparams['n_heads']
-                
-                available_heads = search_space_def.get('n_heads', {}).get('choices', [1, 2, 4, 8, 16])
-                
-                adjusted_heads = adjust_n_heads_for_rotary(d_model, n_heads, available_heads)
+                # NePS may sample raw ints: d_model raw 1-16 -> actual = raw * 64; n_heads raw 1-8 -> actual = raw * 2
+                d_model_raw = int(hyperparams['d_model'])
+                n_heads_raw = int(hyperparams['n_heads'])
+                d_model_scale = search_space_def.get(
+                    'd_model', {}).get('scale', 64)
+                n_heads_scale = search_space_def.get(
+                    'n_heads', {}).get('scale', 2)
+                d_model = d_model_raw * d_model_scale
+                n_heads = n_heads_raw * n_heads_scale
+                n_heads_upper = search_space_def.get(
+                    'n_heads', {}).get('upper', 8)
+                available_heads = [
+                    i * n_heads_scale for i in range(1, n_heads_upper + 1)]
+                adjusted_heads = adjust_n_heads_for_rotary(
+                    d_model, n_heads, available_heads)
+                hyperparams['d_model'] = d_model
                 hyperparams['n_heads'] = adjusted_heads
-            
+
             full_config = base_config.copy()
             full_config.update(hyperparams)
 
@@ -335,16 +347,21 @@ def create_evaluate_pipeline(base_config: dict, search_space_def: dict):
             if n_tokens is not None:
                 n_tokens = int(n_tokens)
                 frac = random.uniform(0.001, 0.005)
-                full_config['valid_tokens'] = max(1, int(n_tokens * frac))
+                valid_from_frac = max(1, int(n_tokens * frac))
+                seq_len = full_config.get('seq_len', 2048)
+                target_global_batch = get_target_global_batch_for_tokens(n_tokens)
+                min_valid_tokens = (seq_len + 1) * target_global_batch
+                full_config['valid_tokens'] = max(valid_from_frac, min_valid_tokens)
 
             config_path = Path(pipeline_directory) / 'config.yaml'
             config_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             with open(config_path, 'w') as f:
-                yaml.dump(full_config, f, default_flow_style=False, sort_keys=False)
-            
+                yaml.dump(full_config, f, default_flow_style=False,
+                          sort_keys=False)
+
             logging.info(f"Saved full config to {config_path}")
-            
+
             # Only sample configurations for now
             return None
             loss = train_with_config(
@@ -421,7 +438,7 @@ def main():
     parser.add_argument(
         "--root_dir",
         type=str,
-        default="neps/neps_configs/Neps_Test",
+        default="neps/neps_configs/Neps_New_Test",
         help="Directory to store NePS results"
     )
     parser.add_argument(

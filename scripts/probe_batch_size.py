@@ -31,15 +31,29 @@ def load_config_simple(path: str):
     return Config(**config_dict)
 
 
-def get_target_global_batch_for_param_count(n_params: int) -> int:
-    """Target global batch size from model param count (via model.count_params()).
-    < 5M: 16; 5M–20M: 64; 20M–70M: 128; 70M+: 256.
+# def get_target_global_batch_for_param_count(n_params: int) -> int:
+#     """Target global batch size from model param count (via model.count_params()).
+#     < 5M: 16; 5M–20M: 64; 20M–70M: 128; 70M+: 256.
+#     """
+#     if n_params < 5_000_000:
+#         return 16
+#     if n_params < 20_000_000:
+#         return 64
+#     if n_params < 70_000_000:
+#         return 128
+#     return 256
+
+
+def get_target_global_batch_for_tokens(n_tokens: int) -> int:
+    """Target global batch size from number of tokens and model param count.
     """
-    if n_params < 5_000_000:
+    if n_tokens < 100_000_000:
         return 16
-    if n_params < 20_000_000:
+    if n_tokens < 500_000_000:
+        return 32
+    if n_tokens < 1_000_000_000:
         return 64
-    if n_params < 70_000_000:
+    if n_tokens < 3_000_000_000:
         return 128
     return 256
 
@@ -108,7 +122,8 @@ def find_max_batch_size_ascending(
 
     total_gb = 0.0
     if torch.cuda.is_available():
-        idx = device.index if hasattr(device, "index") else torch.cuda.current_device()
+        idx = device.index if hasattr(
+            device, "index") else torch.cuda.current_device()
         total_gb = torch.cuda.get_device_properties(idx).total_memory / 1024**3
 
     working_bs = None
@@ -163,11 +178,11 @@ def find_max_batch_size_ascending(
     return working_bs
 
 
-def _model_param_count(model) -> int:
-    """Total parameter count; uses model.count_params() if available."""
-    if hasattr(model, "count_params"):
-        return model.count_params(non_embedding=False)
-    return sum(p.numel() for p in model.parameters())
+# def _model_param_count(model) -> int:
+#     """Total parameter count; uses model.count_params() if available."""
+#     if hasattr(model, "count_params"):
+#         return model.count_params(non_embedding=False)
+#     return sum(p.numel() for p in model.parameters())
 
 
 def get_batch_config(
@@ -198,8 +213,9 @@ def get_batch_config(
     """
     seq_len = cfg.seq_len
     vocab_size = cfg.vocab_size
-    n_params = _model_param_count(model)
-    target_global = get_target_global_batch_for_param_count(n_params)
+    target_global = get_target_global_batch_for_tokens(cfg.n_tokens)
+    # n_params = _model_param_count(model)
+    # target_global = get_target_global_batch_for_param_count(n_params)
 
     max_micro_bs = find_max_batch_size_ascending(
         cfg=cfg,
@@ -280,21 +296,21 @@ def main():
         probe_sizes=probe_sizes,
     )
 
-    n_params = _model_param_count(model)
-    target_global_batch = (
-        {"tiny": 16, "small": 64, "medium": 256}.get(args.model_size)
-        if args.model_size
-        else get_target_global_batch_for_param_count(n_params)
-    )
+    # n_params = _model_param_count(model)
+    target_global_batch = get_target_global_batch_for_tokens(cfg.n_tokens)
+    
     grad_accum = max(
-        1, (target_global_batch + max_bs * args.num_gpus - 1) // (max_bs * args.num_gpus)
+        1, (target_global_batch + max_bs *
+            args.num_gpus - 1) // (max_bs * args.num_gpus)
     )
     actual_global = max_bs * grad_accum * args.num_gpus
 
     print("")
     print(f"=== Result: max_micro_batch_size = {max_bs} ===")
-    print(f"  Model params: {n_params:,} (target global batch {target_global_batch})")
-    print(f"  Suggested grad_accumulation_steps: {grad_accum} (for target ~{target_global_batch})")
+    print(
+        f"  Token Budget: {cfg.n_tokens:,} (target global batch {target_global_batch})")
+    print(
+        f"  Suggested grad_accumulation_steps: {grad_accum} (for target ~{target_global_batch})")
     print(f"  Actual global batch size: {actual_global}")
 
     print("")

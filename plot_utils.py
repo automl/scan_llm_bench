@@ -15,7 +15,6 @@ from models.params_flops import total_training_flops, format_flops
 
 
 # L40 GPU: ~181 TFLOPS FP16/BF16. FLOPs per GPU-hour = 181e12 * 3600
-# User can override when calling plot_flops_per_gpu_hour.
 L40_PEAK_FLOPS_PER_SEC = 181e12
 DEFAULT_FLOPS_PER_GPU_HOUR = L40_PEAK_FLOPS_PER_SEC * 3600  # ~6.52e17 FLOPs per GPU-hour for 1x L40
 EXPECTED_MFU = 0.32

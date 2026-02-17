@@ -10,11 +10,10 @@ done < $SCRIPT_DIR/config.conf
 cd $WORKDIR
 
 # Activate conda environment
-source $CONDA_SOURCE
-conda activate $CONDA_ENV
+source ~/anaconda3/bin/activate # Adjust to your path of Miniconda installation
+conda activate scan_llm
 
 echo Waiting for debugger to attach...
-onfig=/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/config/chinchilla_scaling_configs/0_4M_8MT_scaled.yaml
 
 job_idx=""
 if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
@@ -22,9 +21,9 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
 fi
 
 if [[ -n "$job_idx" ]]; then
-  python -m debugpy --listen 0.0.0.0:$PORT --wait-for-client $WORKDIR/train.py  --config="$config" --job_idx="$job_idx" --job_cluster="$SLURM_JOB_ID"
+  python -m debugpy --listen 0.0.0.0:$PORT --wait-for-client $WORKDIR/scripts/backfill_neps_reports.py --dry-run
 else
-  python -m debugpy --listen 0.0.0.0:$PORT --wait-for-client $WORKDIR/train.py  --config="$config" --job_cluster="$SLURM_JOB_ID"
+  python -m debugpy --listen 0.0.0.0:$PORT --wait-for-client $WORKDIR/scripts/backfill_neps_reports.py --dry-run
 fi
 
 conda deactivate
