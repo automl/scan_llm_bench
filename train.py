@@ -28,8 +28,6 @@ import math
 
 flags.DEFINE_string('config', 'config/config.yaml',
                     'Path to config.yaml file.')
-flags.DEFINE_string('config_overrides', None,
-                    'Path to YAML with config overrides (merged on top of base config).')
 flags.DEFINE_integer(
     'job_idx', None, 'Job idx for job-array sweeps. From 0 to n-1.')
 flags.DEFINE_integer('job_cluster', None, 'Job cluster ID.')
@@ -49,7 +47,7 @@ FLAGS = flags.FLAGS
 def main(_):
 
     CFG_PATH = FLAGS.config
-    cfg, _ = utils.load_config(CFG_PATH, overrides_path=FLAGS.config_overrides)
+    cfg, _ = utils.load_config(CFG_PATH)
 
     local_rank, world_size, device, master_process = pytorch_setup(cfg)
     print("Save NePS report: ", FLAGS.save_neps_report)
@@ -121,12 +119,6 @@ def main(_):
         engine.scheduler.cooldown_steps
     )
 
-    try:
-        # Get one evaluation at least at the end of the training
-        if steps_budget > cfg.eval_every_steps:
-            cfg = cfg._replace(eval_every_steps=steps_budget)
-    except AttributeError:
-        pass
     micro_step_budget = steps_budget * cfg.grad_accumulation_steps
     if micro_step_budget > len(trainloader):
         raise ValueError('trainloader too short!')

@@ -13,7 +13,7 @@ from absl import flags
 FLAGS = flags.FLAGS
 
 
-def load_config(path, overrides_path=None):
+def load_config(path):
     """
     Parse a yaml file and return the correspondent config as a namedtuple.
     If the config files has multiple entries, returns the one corresponding to job_idx.
@@ -29,13 +29,6 @@ def load_config(path, overrides_path=None):
 
     # Remove neps_search_space if present (not a training config parameter)
     config_dict.pop('neps_search_space', None)
-
-    # Apply overrides if provided (from NePS)
-    if overrides_path is not None:
-        with open(overrides_path, 'r') as file:
-            overrides = yaml.safe_load(file)
-        if overrides:
-            config_dict.update(overrides)
 
     Config = namedtuple('Config', config_dict.keys())
 
