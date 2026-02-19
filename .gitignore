@@ -1,10 +1,11 @@
 # Ignore Python cache files
 __pycache__/
 *.py[cod]
-checkpoints/
 logs/
 data/data/
 neps_results/
+neps_configs/*.lock 
+neps_configs/*summary*
 # Ignore Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 
@@ -20,7 +21,6 @@ env/
 
 # Ignore data files
 *.csv
-*.json
 
 # Ignore any other temporary or sensitive files
 *.tmp

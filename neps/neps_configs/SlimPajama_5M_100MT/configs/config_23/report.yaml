@@ -1,0 +1,19 @@
+cost: 2.356950279450624e+16
+err: null
+evaluation_duration: 2.356950279450624e+16
+extra:
+  compute_formatted: 23.57 PFLOPs
+  duration: 589.1534657478333
+  final_step: 1146
+  global_batch_size: 64
+  micro_batch_size: 16
+  n_tokens: 150078032
+  steps_budget: 1145
+  time_duration_seconds: 589.1534657478333
+  train_loss: 4.00581169128418
+  valid_loss: 9.951688607533773
+learning_curve:
+- 4.00581169128418
+objective_to_minimize: 4.00581169128418
+reported_as: success
+tb: null
