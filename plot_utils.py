@@ -12,6 +12,7 @@ from typing import List, Optional
 import yaml
 from utils import dict_to_config
 from models.params_flops import total_training_flops, format_flops
+import neps
 
 
 # L40 GPU: ~181 TFLOPS FP16/BF16. FLOPs per GPU-hour = 181e12 * 3600
@@ -148,6 +149,7 @@ def plot_flops_per_gpu_hour(
     flops_data: list[tuple[str, int]],
     *,
     flops_per_gpu_hour: Optional[float] = None,
+    num_gpus: Optional[int] = None,
     gpu_name: str = "L40",
     title: Optional[str] = None,
     log_scale: bool = True,
@@ -174,7 +176,7 @@ def plot_flops_per_gpu_hour(
     import matplotlib.ticker as ticker
     
     if flops_per_gpu_hour is None:
-        flops_per_gpu_hour = DEFAULT_FLOPS_PER_GPU_HOUR * EXPECTED_MFU
+        flops_per_gpu_hour = DEFAULT_FLOPS_PER_GPU_HOUR * EXPECTED_MFU * num_gpus
 
     gpu_hours = [flops / flops_per_gpu_hour for _, flops in flops_data]
     if not gpu_hours:
@@ -224,9 +226,6 @@ def get_metrics_from_neps_reports(
     results = []
     for config_dir in sorted(root.iterdir()):
         if not config_dir.is_dir() or not config_dir.name.startswith("config_"):
-            continue
-        if int(config_dir.name.split("_")[1]) < 31:
-            print(f"Skipping {config_dir.name} because it is before config_31")
             continue
         report_path = config_dir / report_yaml_name
         if not report_path.is_file():
@@ -317,26 +316,31 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--neps_configs_dir",
+        default="neps/neps_configs/Neps_Scale_Search_Space/configs",
         type=str,
         help="Path to NePS configs directory (e.g. neps/neps_configs/MyExp/configs)",
     )
     parser.add_argument(
         "--out-dist",
+        default="plots/scale_flops_dist.png",
         type=str,
         help="Save FLOPs distribution figure to this path",
     )
     parser.add_argument(
         "--out-gpu-hours",
+        default="plots/scale_gpu_hours.png",
         type=str,
         help="Save FLOPs per GPU hour figure to this path",
     )
     parser.add_argument(
         "--out-mfu-distribution",
+        default="plots/scale_mfu_dist.png",
         type=str,
         help="Save MFU distribution figure to this path",
     )
     parser.add_argument(
         "--out-flops-vs-mfu",
+        default="plots/scale_flops_vs_mfu.png",
         type=str,
         help="Save FLOPs vs MFU figure to this path",
     )
@@ -349,7 +353,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-gpus",
         type=int,
-        default=1,
+        default=8,
         help="Number of GPUs to use",
     )
     parser.add_argument("--no-log-scale", action="store_true", help="Use linear scale")
@@ -379,6 +383,7 @@ if __name__ == "__main__":
         plot_flops_per_gpu_hour(
             flops_data,
             flops_per_gpu_hour=args.flops_per_gpu_hour,
+            num_gpus=args.num_gpus,
             log_scale=not args.no_log_scale,
             bins=30,
             edgecolor="black",
