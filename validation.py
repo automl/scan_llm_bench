@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Run validation on a trained checkpoint and update the NePS report.yaml with the
 validation loss as objective_to_minimize.
@@ -13,7 +12,7 @@ Usage:
         --config_number 5 \\
         --neps_root_dir neps/neps_configs/Neps_Scale_Search_Space \\
 """
-from absl import flags
+from absl import app, flags
 import argparse
 import os
 import sys
@@ -21,7 +20,8 @@ from pathlib import Path
 
 import torch
 import yaml
-from scan_llm_bench.torch_utils import pytorch_setup
+from models.params_flops import format_flops
+from torch_utils import pytorch_setup
 import utils
 
 from utils import load_config, dict_to_config
@@ -50,13 +50,13 @@ flags.DEFINE_bool(
 FLAGS = flags.FLAGS
 
 
-def main():
+def main(_):
     # Load config and checkpoint
     CFG_PATH = FLAGS.config
     cfg, _ = load_config(CFG_PATH)
     ckpt = maybe_load_checkpoint(cfg)
     local_rank, world_size, device, master_process = pytorch_setup(cfg)
-    model, _, _ = construct_model(cfg)
+    model, _, compute_flops = construct_model(cfg)
     _, validloader = get_dataloaders(cfg)
     engine = TorchEngine(model, cfg, device, local_rank, ckpt)
 
@@ -69,15 +69,26 @@ def main():
     if not neps_dir:
         print('Cannot save NePS report: neither neps_root_dir nor neps_report_dir set')
     else:
-        report_dir = neps_dir / "configs" / f"config_{FLAGS.config_number}"
-        report_path = report_dir / "report.yaml"
-        if not report_path.exists():
+        report_dir = os.path.join(neps_dir, "configs", f"config_{FLAGS.config_number}")
+        report_path = os.path.join(report_dir, "report.yaml")
+        if not os.path.exists(report_path):
+            n_params = (
+                model.count_params(non_embedding=False)
+                if hasattr(model, 'count_params')
+                else sum(p.numel() for p in model.parameters())
+            )
             print(f"Report not found: {report_path}. Creating minimal report with valid_loss.")
             report = {
-                "cost": None,
+                "cost": compute_flops if compute_flops else None,
                 "objective_to_minimize": valid_loss,
-                "learning_curve": [],
-                "extra": {"valid_loss": valid_loss},
+                "extra": 
+                    {"valid_loss": valid_loss, 
+                     "n_params": n_params,
+                     'compute_formatted': format_flops(compute_flops) if compute_flops else None,
+                     "flops": compute_flops if compute_flops else None,
+                     "n_data": cfg.n_tokens if hasattr(cfg, 'n_tokens') else None,
+                     'micro_batch_size': cfg.micro_batch_size if hasattr(cfg, 'micro_batch_size') else None,
+                    },
             }
         else:
             with open(report_path, "r") as f:
@@ -97,8 +108,6 @@ def main():
             "info_dict": report.get("extra") or report.get("info_dict") or {},
         }
         user_result["info_dict"]["valid_loss"] = valid_loss
-        if "learning_curve" in report:
-            user_result["learning_curve"] = report["learning_curve"]
 
         try:
             from neps import save_pipeline_results
@@ -113,4 +122,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    app.run(main)

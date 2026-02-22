@@ -59,7 +59,6 @@ def main(_):
         utils.log_job_info()
 
     # Barrier: ensure rank 0 finishes wandb before other ranks proceed to DDP.
-    # Without this, rank 1 reaches DDP init first and waits for rank 0, causing NCCL timeout.
     if dist.is_initialized():
         dist.barrier()
 
@@ -75,7 +74,6 @@ def main(_):
     )
 
     # Probe batch size: find max micro_batch_size that fits, then set grad_accum from model size.
-    # Target global batch from param count: <5M→16, 5–20M→64, 20–70M→128, 70M+→256.
     if torch.cuda.is_available():
         model_on_device = model.to(device)
         micro_bs, _ = get_batch_config(
@@ -133,11 +131,8 @@ def main(_):
     # Bookkeeping
     metrics = defaultdict(list)
     train_loss_array = []
-    # all_train_losses = []  # per-batch training loss (saved to JSON in config_dir)
-    # all_lrs = []  # per-batch learning rate (saved to JSON in config_dir)
     training_start_time = time.time()
     last_train_loss = None
-    last_valid_loss = None
 
     # Training
     for micro_step, micro_batch in enumerate(trainloader, micro_step_start + 1):
@@ -151,24 +146,11 @@ def main(_):
         last_train_loss = train_loss.item() if hasattr(
             train_loss, 'item') else float(train_loss)
         train_loss_array.append(train_loss)
-        # all_train_losses.append(last_train_loss)
-        # try:
-        #     lr = engine.optimizer.param_groups[0]["lr"]
-        # except (IndexError, KeyError):
-        #     lr = None
-        # all_lrs.append(lr)
-
-        # Eval
-        valid_loss = None
-        if cfg.eval and step % cfg.eval_every_steps == 0 and is_step:
-            print_master('Evaluating on validation set')
-            valid_loss = engine.eval(validloader)
-            last_valid_loss = valid_loss
 
         # Log
         if master_process and step % cfg.log_every_steps == 0 and is_step:
             utils.log(cfg, metrics, micro_step, train_loss,
-                      train_loss_array, valid_loss, engine.optimizer, world_size)
+                      train_loss_array, engine.optimizer, world_size)
             train_loss_array = []
 
         # Checkpoint
@@ -180,11 +162,6 @@ def main(_):
     if master_process and cfg.save_last_checkpoint:
         save_checkpoint(step, model, engine, cfg, metrics)
 
-    # Final validation so objective_to_minimize can use eval loss (all ranks for DDP reduce)
-    if FLAGS.save_neps_report and cfg.eval and validloader is not None:
-        print_master('Final validation for NePS report')
-        last_valid_loss = engine.eval(validloader)
-
     # Save NePS report if requested
     if master_process and FLAGS.save_neps_report:
         neps_dir = FLAGS.neps_report_dir or FLAGS.neps_root_dir
@@ -194,16 +171,14 @@ def main(_):
             training_duration = time.time() - training_start_time
             global_batch = cfg.micro_batch_size * cfg.grad_accumulation_steps * world_size
             n_data = getattr(cfg, 'n_tokens', None)
-            objective = last_valid_loss if last_valid_loss is not None else last_train_loss
             result = {
-                'objective_to_minimize': objective,
+                'objective_to_minimize': last_train_loss,
                 'cost': compute_flops,
                 'evaluation_duration': training_duration,
                 'info_dict': {
                     'duration': training_duration,
                     'compute_formatted': format_flops(compute_flops) if compute_flops else None,
                     'train_loss': last_train_loss,
-                    'valid_loss': last_valid_loss,
                     'n_data': n_data,
                     'n_params': n_params,
                     'flops': compute_flops,
@@ -225,20 +200,7 @@ def main(_):
                     root_directory=Path(neps_dir),
                 )
                 print_master(f'Saved NePS report to {neps_dir}')
-
-                # Save per-batch training_loss and learning_rate to JSON in config_dir (not in report.yaml)
-                # config_dir = Path(neps_dir) / "configs" / f"config_{FLAGS.config_number}"
-
-                # Values already saved in metrics.json in checkpoint
-                # config_dir.mkdir(parents=True, exist_ok=True)
-                # curve_path = config_dir / "training_curve.json"
-                # with open(curve_path, "w") as f:
-                #     json.dump(
-                #         {"training_loss": all_train_losses, "learning_rate": all_lrs},
-                #         f,
-                #         indent=2,
-                #     )
-                # print_master(f'Saved training curve to {curve_path}')
+                
             except Exception as e:
                 print_master(f'Failed to save NePS report: {e}')
 

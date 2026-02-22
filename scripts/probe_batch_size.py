@@ -31,19 +31,6 @@ def load_config_simple(path: str):
     return Config(**config_dict)
 
 
-# def get_target_global_batch_for_param_count(n_params: int) -> int:
-#     """Target global batch size from model param count (via model.count_params()).
-#     < 5M: 16; 5M–20M: 64; 20M–70M: 128; 70M+: 256.
-#     """
-#     if n_params < 5_000_000:
-#         return 16
-#     if n_params < 20_000_000:
-#         return 64
-#     if n_params < 70_000_000:
-#         return 128
-#     return 256
-
-
 def get_target_global_batch_for_tokens(n_tokens: int) -> int:
     """Target global batch size from number of tokens and model param count.
     """
@@ -178,13 +165,6 @@ def find_max_batch_size_ascending(
     return working_bs
 
 
-# def _model_param_count(model) -> int:
-#     """Total parameter count; uses model.count_params() if available."""
-#     if hasattr(model, "count_params"):
-#         return model.count_params(non_embedding=False)
-#     return sum(p.numel() for p in model.parameters())
-
-
 def get_batch_config(
     cfg,
     model,
@@ -214,8 +194,6 @@ def get_batch_config(
     seq_len = cfg.seq_len
     vocab_size = cfg.vocab_size
     target_global = get_target_global_batch_for_tokens(cfg.n_tokens)
-    # n_params = _model_param_count(model)
-    # target_global = get_target_global_batch_for_param_count(n_params)
 
     max_micro_bs = find_max_batch_size_ascending(
         cfg=cfg,
@@ -296,7 +274,6 @@ def main():
         probe_sizes=probe_sizes,
     )
 
-    # n_params = _model_param_count(model)
     target_global_batch = get_target_global_batch_for_tokens(cfg.n_tokens)
     
     grad_accum = max(
