@@ -8,6 +8,9 @@ extra:
   global_batch_size: 128
   micro_batch_size: 8
   n_tokens: 2034394496
+  flops: 3540269837497663488
+  n_data: 2034394496
+  n_param: 231344128
   steps_budget: 7760
   time_duration_seconds: 4420.730137348175
   train_loss: 1.648358702659607

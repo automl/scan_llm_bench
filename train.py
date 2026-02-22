@@ -185,7 +185,7 @@ def main(_):
                     'compute_formatted': format_flops(compute_flops) if compute_flops else None,
                     'train_loss': last_train_loss,
                     'n_data': n_data,
-                    'n_params': n_params,
+                    'n_param': n_params,
                     'flops': compute_flops,
                     'micro_batch_size': cfg.micro_batch_size,
                     'global_batch_size': global_batch,
