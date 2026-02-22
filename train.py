@@ -16,7 +16,7 @@ import utils
 from utils import print_master
 from torch_utils import pytorch_setup, destroy_ddp
 from data import get_dataloaders
-from checkpoint_utils import save_checkpoint, maybe_load_checkpoint
+from checkpoint_utils import save_checkpoint, maybe_load_checkpoint, update_config_yaml_for_resume
 from models import construct_model
 from models.params_flops import format_flops
 from engine import TorchEngine
@@ -161,6 +161,11 @@ def main(_):
     print_master('=== Training Completed! ===')
     if master_process and cfg.save_last_checkpoint:
         save_checkpoint(step, model, engine, cfg, metrics)
+        # Make config YAML ready for validation run
+        try:
+            update_config_yaml_for_resume(CFG_PATH, step, cfg)
+        except Exception as e:
+            print_master(f'Could not update config for resume: {e}')
 
     # Save NePS report if requested
     if master_process and FLAGS.save_neps_report:

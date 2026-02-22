@@ -1,13 +1,26 @@
 """
 Slurm script generator for scan_llm_bench.
 
-Generates Slurm batch scripts for training runs with NePS configs,
-with support for model-size-based global batch size targets and
-auto batch size tuning (probe low → high to find max micro_batch_size that fits).
+Generates Slurm batch scripts for every stage of the HPO pipeline:
+  1. Sample NePS configs         (hpo_neps.py)
+  2. Train sequentially          (train.py in a loop)
+  3. Train single config         (train.py)
+  4. Train as SLURM array job    (train.py, one task per config)
+  5. Validate sequentially       (validation.py in a loop)
+  6. Validate single config      (validation.py)
+  7. Validate as SLURM array job (validation.py, one task per config)
+  8. Probe batch size             (scripts/probe_batch_size.py)
+  9. Plot                         (plot_utils.py)
+
+Supports single-GPU (python) and multi-GPU (torchrun) execution.
+
+Usage examples at the bottom of this file and via:
+    python cluster/slurm_manager.py --help
 """
 
+import textwrap
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -18,291 +31,607 @@ class ClusterConfig:
     partition: str
     account: Optional[str] = None
     load_env: str = ""
+    gpus_per_node: int = 1
+    cpus_per_task: int = 8
+    mem_gb: int = 48
+    time_hours: int = 24
 
 
-# Cluster configurations
 CLUSTER_CONFIGS: dict[str, ClusterConfig] = {
     "mldlc2": ClusterConfig(
         partition="mldlc2_gpu-l40s",
-        load_env="""source ~/anaconda3/bin/activate
-                    conda activate scan_llm
-                    """,
+        load_env=(
+            "source ~/anaconda3/bin/activate\n"
+            "conda activate scan_llm\n"
+        ),
     ),
     "meta": ClusterConfig(
         partition="gpu",
-        load_env="source ~/miniconda3/bin/activate && conda activate test_scaling_laws",
+        load_env="source ~/miniconda3/bin/activate && conda activate test_scaling_laws\n",
     ),
     "juwels": ClusterConfig(
         partition="gpu",
         account="projectnucleus",
-        load_env="""ml --force purge
-                    ml Stages/2026 GCCcore/14.3.0 PyTorch/2.9.1
-                    source /p/project1/projectnucleus/sinani1/envs/openclip/bin/activate
-                    """,
+        load_env=(
+            "ml --force purge\n"
+            "ml Stages/2026 GCCcore/14.3.0 PyTorch/2.9.1\n"
+            "source /p/project1/projectnucleus/sinani1/envs/openclip/bin/activate\n"
+        ),
     ),
 }
 
 
 class ModelSize(Enum):
-    """Model size for probe_batch_size script (tiny=16, small=64, medium=256)."""
     TINY = "tiny"
     SMALL = "small"
     MEDIUM = "medium"
 
 
+def _dedent(text: str) -> str:
+    """Strip common leading whitespace so f-strings inside methods stay clean."""
+    return textwrap.dedent(text).strip() + "\n"
+
+
+def _write_script(path: Path, content: str) -> Path:
+    path = Path(path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_dedent(content), encoding="utf-8")
+    return path
+
+
 class SlurmManager:
-    """Manager to create and submit Slurm batch jobs for scan_llm_bench."""
+    """Generate and (optionally) submit Slurm batch jobs."""
 
     def __init__(
         self,
-        job_name: str = "scan_llm_train",
-        partition: str = "mldlc2_gpu-l40s",
-        gpus: int = 1,
-        cpus_per_task: int = 8,
-        mem_gb: int = 48,
-        time_hours: int = 24,
-        root_dir: Path | str = ".",
-        workspace_dir: str = ".",
         cluster: str = "mldlc2",
+        workspace_dir: str | Path = ".",
+        job_name: str = "scan_llm",
+        gpus: int = 1,
+        cpus_per_task: int | None = None,
+        mem_gb: int | None = None,
+        time_hours: int | None = None,
+        partition: str | None = None,
+        output_dir: str | Path = "cluster/generated",
     ) -> None:
-        self.job_id: Optional[int] = None
-        self.job_name = job_name
-        self.partition = partition
-        self.gpus = gpus
-        self.cpus_per_task = cpus_per_task
-        self.mem_gb = mem_gb
-        self.time_hours = time_hours
-        self.root_dir = Path(root_dir)
-        self.workspace_dir = Path(workspace_dir)
-        self.script_path = self.root_dir / "train.sh"
+        cfg = CLUSTER_CONFIGS.get(cluster)
+        if cfg is None:
+            raise ValueError(f"Unknown cluster {cluster!r}. Choose from {list(CLUSTER_CONFIGS)}")
+        self._cluster_cfg = cfg
         self.cluster = cluster
-        self._cluster_cfg = CLUSTER_CONFIGS.get(
-            cluster, CLUSTER_CONFIGS["mldlc2"])
+        self.workspace_dir = Path(workspace_dir).resolve()
+        self.job_name = job_name
+        self.gpus = gpus
+        self.cpus_per_task = cpus_per_task or cfg.cpus_per_task
+        self.mem_gb = mem_gb or cfg.mem_gb
+        self.time_hours = time_hours or cfg.time_hours
+        self.partition = partition or cfg.partition
+        # Resolve output_dir relative to workspace so it's independent of cwd
+        out = Path(output_dir)
+        self.output_dir = (self.workspace_dir / out if not out.is_absolute() else out).resolve()
 
-    def _account_line(self) -> str:
+    def _sbatch_header(
+        self,
+        job_name: str | None = None,
+        gpus: int | None = None,
+        mem_gb: int | None = None,
+        time_hours: int | None = None,
+        log_subdir: str = "",
+        array_range: str | None = None,
+    ) -> str:
+        name = job_name or self.job_name
+        g = gpus if gpus is not None else self.gpus
+        m = mem_gb or self.mem_gb
+        t = time_hours or self.time_hours
+        log_dir = f"logs/{log_subdir}" if log_subdir else "logs"
+        log_pattern = "%x-%A_%a" if array_range else "%x-%A"
+
+        lines = [
+            f"#SBATCH --partition={self.partition}",
+            f"#SBATCH --job-name={name}",
+        ]
+        if g > 0:
+            lines.append(f"#SBATCH --gres=gpu:{g}")
+        lines += [
+            f"#SBATCH --cpus-per-task={self.cpus_per_task}",
+            f"#SBATCH --mem={m}GB",
+            f"#SBATCH --time={t:02d}:00:00",
+        ]
         if self._cluster_cfg.account:
-            return f"#SBATCH --account={self._cluster_cfg.account}\n"
-        return ""
+            lines.append(f"#SBATCH --account={self._cluster_cfg.account}")
+        if array_range:
+            lines.append(f"#SBATCH --array={array_range}")
+        lines += [
+            f"#SBATCH --output={log_dir}/{log_pattern}.out",
+            f"#SBATCH --error={log_dir}/{log_pattern}.err",
+        ]
+        return "\n".join(lines)
 
-    def _python_path_setup(self) -> str:
-        return f"""
-                export PATH="{self.root_dir}/bin:$PATH"
-                export PYTHONPATH="{self.workspace_dir}:${{PYTHONPATH}}"
-                cd "{self.workspace_dir}"
+    def _preamble(self, log_subdir: str = "") -> str:
+        log_dir = f"logs/{log_subdir}" if log_subdir else "logs"
+        return f"""\
+                {self._cluster_cfg.load_env}
+                export PYTHONPATH="${{PWD}}:${{PYTHONPATH}}"
+                
+                mkdir -p {log_dir}
+                echo "Workingdir: $PWD"
+                echo "Started at $(date)"
+                echo "Running job $SLURM_JOB_NAME (JID $SLURM_JOB_ID) on $SLURM_JOB_PARTITION"
                 """
 
-    def build_train_script(
+    def _run_cmd(self, script: str, args: str, gpus: int | None = None) -> str:
+        """Wrap a python command with optional torchrun for multi-GPU."""
+        g = gpus if gpus is not None else self.gpus
+        if g > 1:
+            return (
+                f"torchrun \\\n"
+                f"    --standalone \\\n"
+                f"    --nnodes=1 \\\n"
+                f"    --nproc_per_node={g} \\\n"
+                f"    {script} {args}"
+            )
+        return f"python -u {script} {args}"
+
+
+    # Sample NePS configs (hpo_neps.py)
+    def build_sample_neps_configs(
         self,
-        base_config: str,
-        config_overrides: Optional[str] = None,
-        config_number: Optional[int] = None,
-        neps_report_dir: Optional[str] = None,
-        save_neps_report: bool = False,
-        save_to: Optional[Path] = None,
+        hpo_config: str,
+        neps_root_dir: str = "neps/neps_configs/Neps_Test",
+        max_evaluations: int = 50,
+        optimizer: str = "random",
+        job_name: str | None = None,
+        time_hours: int | None = None,
+        save_to: Path | None = None,
     ) -> Path:
-        """Build a Slurm script for a single training run."""
+        """Generate a script to sample NePS configs via hpo_neps.py (no training)."""
+        name = job_name or f"Sample_Neps_{Path(neps_root_dir).name}"
+        t = time_hours or 1
+        header = self._sbatch_header(job_name=name, gpus=0, mem_gb=4, time_hours=t,
+                                     log_subdir="neps_sample")
+        preamble = self._preamble(log_subdir="neps_sample")
 
-        cmd_parts = [
-            "python -u train.py",
-            f'--config="{base_config}"',
-        ]
-        if config_overrides:
-            cmd_parts.append(f'--config_overrides="{config_overrides}"')
-        if config_number is not None:
-            cmd_parts.append(f"--config_number={config_number}")
-        if neps_report_dir:
-            cmd_parts.append(f'--neps_report_dir="{neps_report_dir}"')
-        if save_neps_report:
-            cmd_parts.append("--save_neps_report")
+        cmd = (
+            f"python -u neps/hpo_neps.py \\\n"
+            f"    --config \"{hpo_config}\" \\\n"
+            f"    --root_dir \"{neps_root_dir}\" \\\n"
+            f"    --max_evaluations {max_evaluations} \\\n"
+            f"    --optimizer {optimizer}"
+        )
 
-        cmd = " \\\n    ".join(cmd_parts)
+        script = f"""\
+                #!/bin/bash
+                {header}
+                
+                {preamble}
+                echo "Sampling NePS configs -> {neps_root_dir}"
+                
+                {cmd}
+                
+                echo "Finished at $(date)"
+                """
+        path = save_to or self.output_dir / "sample_neps_configs.sh"
+        return _write_script(path, script)
 
-        script = f"""#!/bin/bash
-                        #SBATCH --partition={self.partition}
-                        #SBATCH --job-name={self.job_name}
-                        #SBATCH --gres=gpu:{self.gpus}
-                        #SBATCH --cpus-per-task={self.cpus_per_task}
-                        #SBATCH --mem={self.mem_gb}GB
-                        #SBATCH --time={self.time_hours}:00:00
-                        {self._account_line()}#SBATCH --output=logs/%x-%j.out
-                        #SBATCH --error=logs/%x-%j.err
 
-                        {self._cluster_cfg.load_env}
-
-                        mkdir -p logs
-                        echo "Workingdir: $PWD"
-                        echo "Started at $(date)"
-                        echo "Running job $SLURM_JOB_NAME (JID $SLURM_JOB_ID) on $SLURM_JOB_PARTITION"
-
-                        {self._python_path_setup()}
-
-                        {cmd}
-                        """
-        path = save_to or self.script_path
-        Path(path).write_text(script)
-        return Path(path)
-
-    def build_neps_configs_script(
+    # Train configs sequentially (run_neps_configs.sh)
+    def build_train_sequential(
         self,
-        base_config: str,
-        neps_results_dir: str,
+        neps_root_dir: str,
         start_config: int = 1,
         end_config: int = 50,
         save_neps_report: bool = True,
-        save_to: Optional[Path] = None,
+        job_name: str | None = None,
+        gpus: int | None = None,
+        save_to: Path | None = None,
     ) -> Path:
-        """Build a Slurm script that runs NePS configs sequentially (like run_neps_configs.sh)."""
+        """Run each NePS config one after another in a single SLURM job."""
+        name = job_name or f"Seq_Train_{Path(neps_root_dir).name}"
+        g = gpus if gpus is not None else self.gpus
+        header = self._sbatch_header(job_name=name, gpus=g,
+                                     log_subdir="from_neps_configs")
+        preamble = self._preamble(log_subdir="from_neps_configs")
+        train_cmd = self._run_cmd("train.py", '"${TRAIN_ARGS[@]}"', gpus=g)
+        report_flag = '1' if save_neps_report else '0'
 
-        configs_dir = f"{neps_results_dir}/configs"
-        script = f"""#!/bin/bash
-                    #SBATCH --partition={self.partition}
-                    #SBATCH --job-name={self.job_name}
-                    #SBATCH --gres=gpu:1
-                    #SBATCH --cpus-per-task={self.cpus_per_task}
-                    #SBATCH --mem={self.mem_gb}GB
-                    #SBATCH --time={self.time_hours}:00:00
-                    {self._account_line()}#SBATCH --output=logs/from_neps_configs/%x-%j.out
-                    #SBATCH --error=logs/from_neps_configs/%x-%j.err
-
-                    {self._cluster_cfg.load_env}
-
-                    mkdir -p logs/from_neps_configs
-                    echo "Workingdir: $PWD"
+        script = f"""\
+                #!/bin/bash
+                {header}
+                
+                {preamble}
+                NEPS_RESULTS_DIR="{neps_root_dir}"
+                CONFIGS_DIR="${{NEPS_RESULTS_DIR}}/configs"
+                START_CONFIG="${{START_CONFIG:-{start_config}}}"
+                END_CONFIG="${{END_CONFIG:-{end_config}}}"
+                SAVE_NEPS_REPORT="${{SAVE_NEPS_REPORT:-{report_flag}}}"
+                
+                echo "=============================================="
+                echo "NePS results dir: $NEPS_RESULTS_DIR"
+                echo "Configs dir:      $CONFIGS_DIR"
+                echo "Config range:     ${{START_CONFIG}} to ${{END_CONFIG}}"
+                echo "=============================================="
+                
+                total_configs=0
+                for config_dir in $(find "$CONFIGS_DIR" -maxdepth 1 -type d -name "config_*" | sort -V); do
+                    config_num=$(basename "$config_dir" | sed 's/config_//')
+                    if [[ "$config_num" =~ ^[0-9]+$ ]] && [[ "$config_num" -ge "$START_CONFIG" ]] && [[ "$config_num" -le "$END_CONFIG" ]]; then
+                        ((total_configs++))
+                    fi
+                done
+                echo "Found $total_configs configurations to run"
+                echo ""
+                
+                completed=0
+                failed=0
+                start_total=$(date +%s)
+                
+                for config_dir in $(find "$CONFIGS_DIR" -maxdepth 1 -type d -name "config_*" | sort -V); do
+                    config_num=$(basename "$config_dir" | sed 's/config_//')
+                    if [[ ! "$config_num" =~ ^[0-9]+$ ]]; then continue; fi
+                    if [[ "$config_num" -lt "$START_CONFIG" ]] || [[ "$config_num" -gt "$END_CONFIG" ]]; then continue; fi
+                
+                    config_file="${{config_dir}}/config.yaml"
+                    if [[ ! -f "$config_file" ]]; then
+                        echo "WARNING: No config.yaml in $config_dir, skipping"
+                        continue
+                    fi
+                
+                    echo "=============================================="
+                    echo "Running config_${{config_num}} ($(($completed + $failed + 1))/$total_configs)"
                     echo "Started at $(date)"
+                    echo "=============================================="
+                
+                    start_config=$(date +%s)
+                
+                    TRAIN_ARGS=(--config="$config_file" --job_cluster="$SLURM_JOB_ID" --config_number="$config_num" --neps_root_dir="$NEPS_RESULTS_DIR")
+                    [[ "$SAVE_NEPS_REPORT" == "1" ]] && TRAIN_ARGS+=(--save_neps_report)
+                
+                    {train_cmd}
+                
+                    exit_code=$?
+                    end_config=$(date +%s)
+                    runtime_config=$((end_config - start_config))
+                
+                    if [[ $exit_code -eq 0 ]]; then
+                        echo "config_${{config_num}} completed successfully in ${{runtime_config}}s"
+                        ((completed++))
+                    else
+                        echo "ERROR: config_${{config_num}} failed with exit code $exit_code"
+                        ((failed++))
+                    fi
+                    echo ""
+                done
+                
+                end_total=$(date +%s)
+                runtime_total=$((end_total - start_total))
+                
+                echo "=============================================="
+                echo "All configurations processed!"
+                echo "Completed: $completed / $total_configs"
+                echo "Failed:    $failed"
+                echo "Total runtime: ${{runtime_total}}s ($(($runtime_total / 60)) minutes)"
+                echo "Finished at $(date)"
+                echo "=============================================="
+                """
+        path = save_to or self.output_dir / "run_neps_configs.sh"
+        return _write_script(path, script)
 
-                    {self._python_path_setup()}
 
-                    BASE_CONFIG="{base_config}"
-                    NEPS_RESULTS_DIR="{neps_results_dir}"
-                    CONFIGS_DIR="{configs_dir}"
-                    START_CONFIG="{start_config}"
-                    END_CONFIG="{end_config}"
-                    SAVE_NEPS_REPORT={'1' if save_neps_report else '0'}
-
-                    echo "Base config: $BASE_CONFIG"
-                    echo "Configs dir: $CONFIGS_DIR"
-                    echo "Config range: ${{START_CONFIG}} to ${{END_CONFIG}}"
-
-                    for config_dir in $(find "$CONFIGS_DIR" -maxdepth 1 -type d -name "config_*" | sort -V); do
-                        config_num=$(basename "$config_dir" | sed 's/config_//')
-                        if [[ ! "$config_num" =~ ^[0-9]+$ ]]; then continue; fi
-                        if [[ "$config_num" -lt "$START_CONFIG" ]] || [[ "$config_num" -gt "$END_CONFIG" ]]; then continue; fi
-
-                        config_file="${{config_dir}}/config.yaml"
-                        if [[ ! -f "$config_file" ]]; then
-                            echo "WARNING: No config.yaml in $config_dir, skipping"
-                            continue
-                        fi
-
-                        echo "=============================================="
-                        echo "Running config_${{config_num}} at $(date)"
-                        echo "=============================================="
-
-                        TRAIN_ARGS=(--config="$BASE_CONFIG" --config_overrides="$config_file" --job_cluster="$SLURM_JOB_ID" --config_number="$config_num" --neps_report_dir="$NEPS_RESULTS_DIR")
-                        [[ "$SAVE_NEPS_REPORT" == "1" ]] && TRAIN_ARGS+=(--save_neps_report)
-                        python train.py "${{TRAIN_ARGS[@]}}"
-
-                        if [[ $? -ne 0 ]]; then
-                            echo "ERROR: config_${{config_num}} failed"
-                        fi
-                    done
-
-                    echo "Finished at $(date)"
-                    """
-        path = save_to or self.script_path
-        Path(path).write_text(script)
-        return Path(path)
-
-    def build_array_job_script(
-        self,
-        base_config: str,
-        neps_results_dir: str,
-        array_start: int,
-        array_end: int,
-        save_neps_report: bool = True,
-        save_to: Optional[Path] = None,
-    ) -> Path:
-        """Build a Slurm array job where each task runs one NePS config."""
-
-        configs_dir = f"{neps_results_dir}/configs"
-        script = f"""#!/bin/bash
-                        #SBATCH --partition={self.partition}
-                        #SBATCH --job-name={self.job_name}
-                        #SBATCH --gres=gpu:1
-                        #SBATCH --cpus-per-task={self.cpus_per_task}
-                        #SBATCH --mem={self.mem_gb}GB
-                        #SBATCH --time={self.time_hours}:00:00
-                        #SBATCH --array={array_start}-{array_end}
-                        {self._account_line()}#SBATCH --output=logs/from_neps_configs/%x-%A_%a.out
-                        #SBATCH --error=logs/from_neps_configs/%x-%A_%a.err
-
-                        {self._cluster_cfg.load_env}
-
-                        mkdir -p logs/from_neps_configs
-                        echo "Array task ${{SLURM_ARRAY_TASK_ID}}"
-                        echo "Started at $(date)"
-
-                        {self._python_path_setup()}
-
-                        CONFIG_DIR="{configs_dir}/config_${{SLURM_ARRAY_TASK_ID}}"
-                        CONFIG_FILE="${{CONFIG_DIR}}/config.yaml"
-
-                        if [[ ! -f "$CONFIG_FILE" ]]; then
-                            echo "ERROR: No config at $CONFIG_FILE"
-                            exit 1
-                        fi
-
-                        TRAIN_ARGS=(--config="{base_config}" --config_overrides="$CONFIG_FILE" --job_cluster="$SLURM_JOB_ID" --config_number="${{SLURM_ARRAY_TASK_ID}}" --neps_report_dir="{neps_results_dir}")
-                        [[ "{'1' if save_neps_report else '0'}" == "1" ]] && TRAIN_ARGS+=(--save_neps_report)
-                        python train.py "${{TRAIN_ARGS[@]}}"
-                        """
-        path = save_to or self.script_path
-        Path(path).write_text(script)
-        return Path(path)
-
-    def build_probe_batch_size_script(
+    # Train a single config (run_train.sh)
+    def build_train_single(
         self,
         config_path: str,
-        model_size: Optional[ModelSize] = None,
-        save_to: Optional[Path] = None,
+        config_number: int | None = None,
+        neps_root_dir: str | None = None,
+        save_neps_report: bool = True,
+        job_name: str | None = None,
+        gpus: int | None = None,
+        save_to: Path | None = None,
     ) -> Path:
-        """Build a Slurm script to probe max batch size from low to high."""
+        """Run train.py for one specific config."""
+        name = job_name or f"Train_Config_{config_number or 'single'}"
+        g = gpus if gpus is not None else self.gpus
+        header = self._sbatch_header(job_name=name, gpus=g,
+                                     log_subdir="from_neps_configs")
+        preamble = self._preamble(log_subdir="from_neps_configs")
 
-        script = f"""#!/bin/bash
-                    #SBATCH --partition={self.partition}
-                    #SBATCH --job-name=probe_batch_size
-                    #SBATCH --gres=gpu:1
-                    #SBATCH --cpus-per-task={self.cpus_per_task}
-                    #SBATCH --mem={self.mem_gb}GB
-                    #SBATCH --time=00:30:00
-                    {self._account_line()}#SBATCH --output=logs/probe_batch_size-%j.out
-                    #SBATCH --error=logs/probe_batch_size-%j.err
+        args = f'--config="{config_path}"'
+        args += ' --job_cluster="$SLURM_JOB_ID"'
+        if config_number is not None:
+            args += f" --config_number={config_number}"
+        if neps_root_dir:
+            args += f' --neps_root_dir="{neps_root_dir}"'
+        if save_neps_report:
+            args += " --save_neps_report"
+        train_cmd = self._run_cmd("train.py", args, gpus=g)
 
-                    {self._cluster_cfg.load_env}
+        script = f"""\
+                #!/bin/bash
+                {header}
+                
+                {preamble}
+                start=$(date +%s)
+                
+                {train_cmd}
+                
+                end=$(date +%s)
+                runtime=$((end - start))
+                echo "Job execution complete."
+                echo "Runtime: ${{runtime}}s"
+                """
+        path = save_to or self.output_dir / "run_train.sh"
+        return _write_script(path, script)
 
-                    mkdir -p logs
-                    {self._python_path_setup()}
 
-                    python -u scripts/probe_batch_size.py --config="{config_path}"{f' --model_size={model_size.value}' if model_size else ''}
-                    """
-        path = save_to or (self.root_dir / "probe_batch_size.sh")
-        Path(path).write_text(script)
-        return Path(path)
+    # 4. Train as SLURM array job
+    def build_train_array(
+        self,
+        neps_root_dir: str,
+        array_start: int = 1,
+        array_end: int = 50,
+        max_concurrent: int | None = None,
+        save_neps_report: bool = True,
+        job_name: str | None = None,
+        gpus: int | None = None,
+        save_to: Path | None = None,
+    ) -> Path:
+        """Each SLURM array task trains one NePS config in parallel."""
+        name = job_name or f"Array_Train_{Path(neps_root_dir).name}"
+        g = gpus if gpus is not None else self.gpus
+        array_spec = f"{array_start}-{array_end}"
+        if max_concurrent:
+            array_spec += f"%{max_concurrent}"
+        header = self._sbatch_header(job_name=name, gpus=g,
+                                     log_subdir="from_neps_configs",
+                                     array_range=array_spec)
+        preamble = self._preamble(log_subdir="from_neps_configs")
+        report_flag = "--save_neps_report" if save_neps_report else ""
 
-    def build_plot_script(
+        train_cmd = self._run_cmd(
+            "train.py",
+            f'--config="$CONFIG_FILE" '
+            f'--job_cluster="$SLURM_JOB_ID" '
+            f'--config_number="${{SLURM_ARRAY_TASK_ID}}" '
+            f'--neps_root_dir="{neps_root_dir}" '
+            f'{report_flag}',
+            gpus=g,
+        )
+
+        script = f"""\
+                #!/bin/bash
+                {header}
+                
+                {preamble}
+                CONFIGS_DIR="{neps_root_dir}/configs"
+                CONFIG_DIR="${{CONFIGS_DIR}}/config_${{SLURM_ARRAY_TASK_ID}}"
+                CONFIG_FILE="${{CONFIG_DIR}}/config.yaml"
+                
+                echo "Array task ${{SLURM_ARRAY_TASK_ID}}"
+                
+                if [[ ! -f "$CONFIG_FILE" ]]; then
+                    echo "ERROR: No config at $CONFIG_FILE"
+                    exit 1
+                fi
+                
+                {train_cmd}
+                """
+        path = save_to or self.output_dir / "run_train_array.sh"
+        return _write_script(path, script)
+
+
+    # 5. Validate configs sequentially
+    def build_validation_sequential(
+        self,
+        neps_root_dir: str,
+        start_config: int = 1,
+        end_config: int = 50,
+        save_neps_report: bool = True,
+        job_name: str | None = None,
+        save_to: Path | None = None,
+    ) -> Path:
+        """Run validation.py for each config sequentially."""
+        name = job_name or f"Seq_Valid_{Path(neps_root_dir).name}"
+        header = self._sbatch_header(job_name=name, gpus=1,
+                                     log_subdir="validation")
+        preamble = self._preamble(log_subdir="validation")
+        report_flag = '1' if save_neps_report else '0'
+
+        script = f"""\
+                #!/bin/bash
+                {header}
+                
+                {preamble}
+                NEPS_RESULTS_DIR="{neps_root_dir}"
+                CONFIGS_DIR="${{NEPS_RESULTS_DIR}}/configs"
+                START_CONFIG="${{START_CONFIG:-{start_config}}}"
+                END_CONFIG="${{END_CONFIG:-{end_config}}}"
+                SAVE_NEPS_REPORT="${{SAVE_NEPS_REPORT:-{report_flag}}}"
+                
+                echo "=============================================="
+                echo "Validation sweep"
+                echo "NePS results dir: $NEPS_RESULTS_DIR"
+                echo "Config range:     ${{START_CONFIG}} to ${{END_CONFIG}}"
+                echo "=============================================="
+                
+                completed=0
+                failed=0
+                start_total=$(date +%s)
+                
+                for config_dir in $(find "$CONFIGS_DIR" -maxdepth 1 -type d -name "config_*" | sort -V); do
+                    config_num=$(basename "$config_dir" | sed 's/config_//')
+                    if [[ ! "$config_num" =~ ^[0-9]+$ ]]; then continue; fi
+                    if [[ "$config_num" -lt "$START_CONFIG" ]] || [[ "$config_num" -gt "$END_CONFIG" ]]; then continue; fi
+                
+                    config_file="${{config_dir}}/config.yaml"
+                    if [[ ! -f "$config_file" ]]; then
+                        echo "WARNING: No config.yaml in $config_dir, skipping"
+                        continue
+                    fi
+                
+                    echo "=============================================="
+                    echo "Validating config_${{config_num}} at $(date)"
+                    echo "=============================================="
+                
+                    python -u validation.py \
+                        --config="$config_file" \
+                        --config_number="$config_num" \
+                        --job_cluster="$SLURM_JOB_ID" \
+                        --neps_root_dir="$NEPS_RESULTS_DIR"
+                
+                    if [[ $? -eq 0 ]]; then
+                        echo "config_${{config_num}} validation OK"
+                        ((completed++))
+                    else
+                        echo "ERROR: config_${{config_num}} validation failed"
+                        ((failed++))
+                    fi
+                    echo ""
+                done
+                
+                end_total=$(date +%s)
+                runtime_total=$((end_total - start_total))
+                
+                echo "=============================================="
+                echo "Validation complete!"
+                echo "Completed: $completed"
+                echo "Failed:    $failed"
+                echo "Total runtime: ${{runtime_total}}s ($(($runtime_total / 60)) minutes)"
+                echo "Finished at $(date)"
+                echo "=============================================="
+                """
+        path = save_to or self.output_dir / "run_validation.sh"
+        return _write_script(path, script)
+
+
+    # 6. Validate a single config
+    def build_validation_single(
+        self,
+        config_path: str,
+        config_number: int,
+        neps_root_dir: str,
+        save_neps_report: bool = True,
+        job_name: str | None = None,
+        save_to: Path | None = None,
+    ) -> Path:
+        """Run validation.py for one specific config."""
+        name = job_name or f"Valid_Config_{config_number}"
+        header = self._sbatch_header(job_name=name, gpus=1,
+                                     log_subdir="validation")
+        preamble = self._preamble(log_subdir="validation")
+        report_flag = "--save_neps_report" if save_neps_report else ""
+
+        script = f"""\
+                #!/bin/bash
+                {header}
+                
+                {preamble}
+                start=$(date +%s)
+                
+                python -u validation.py \
+                    --config="{config_path}" \
+                    --config_number={config_number} \
+                    --job_cluster="$SLURM_JOB_ID" \
+                    --neps_root_dir="{neps_root_dir}" \
+                    {report_flag}
+                
+                end=$(date +%s)
+                runtime=$((end - start))
+                echo "Validation complete. Runtime: ${{runtime}}s"
+                """
+        path = save_to or self.output_dir / "run_validation_single.sh"
+        return _write_script(path, script)
+
+
+    # 7. Validate as SLURM array job
+    def build_validation_array(
+        self,
+        neps_root_dir: str,
+        array_start: int = 1,
+        array_end: int = 50,
+        max_concurrent: int | None = None,
+        save_neps_report: bool = True,
+        job_name: str | None = None,
+        save_to: Path | None = None,
+    ) -> Path:
+        """Each SLURM array task validates one NePS config."""
+        name = job_name or f"Array_Valid_{Path(neps_root_dir).name}"
+        array_spec = f"{array_start}-{array_end}"
+        if max_concurrent:
+            array_spec += f"%{max_concurrent}"
+        header = self._sbatch_header(job_name=name, gpus=1,
+                                     log_subdir="validation",
+                                     array_range=array_spec)
+        preamble = self._preamble(log_subdir="validation")
+        report_flag = "--save_neps_report" if save_neps_report else ""
+
+        script = f"""\
+                #!/bin/bash
+                {header}
+                
+                {preamble}
+                CONFIGS_DIR="{neps_root_dir}/configs"
+                CONFIG_DIR="${{CONFIGS_DIR}}/config_${{SLURM_ARRAY_TASK_ID}}"
+                CONFIG_FILE="${{CONFIG_DIR}}/config.yaml"
+                
+                echo "Validation array task ${{SLURM_ARRAY_TASK_ID}}"
+                
+                if [[ ! -f "$CONFIG_FILE" ]]; then
+                    echo "ERROR: No config at $CONFIG_FILE"
+                    exit 1
+                fi
+                
+                python -u validation.py \
+                    --config="$CONFIG_FILE" \
+                    --config_number="${{SLURM_ARRAY_TASK_ID}}" \
+                    --job_cluster="$SLURM_JOB_ID" \
+                    --neps_root_dir="{neps_root_dir}" \
+                    {report_flag}
+                """
+        path = save_to or self.output_dir / "run_validation_array.sh"
+        return _write_script(path, script)
+
+
+    # 8. Probe batch size
+    def build_probe_batch_size(
+        self,
+        config_path: str,
+        model_size: ModelSize | None = None,
+        job_name: str | None = None,
+        save_to: Path | None = None,
+    ) -> Path:
+        name = job_name or "probe_batch_size"
+        header = self._sbatch_header(job_name=name, gpus=1, mem_gb=self.mem_gb,
+                                     time_hours=1)
+        preamble = self._preamble()
+        size_arg = f" --model_size={model_size.value}" if model_size else ""
+
+        script = f"""\
+                #!/bin/bash
+                {header}
+                
+                {preamble}
+                python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
+                """
+        path = save_to or self.output_dir / "probe_batch_size.sh"
+        return _write_script(path, script)
+
+
+    # 9. Plot
+    def build_plot(
         self,
         neps_configs_dir: str,
         num_gpus: int = 1,
-        out_gpu_hours: Optional[str] = None,
-        out_dist: Optional[str] = None,
-        out_mfu_distribution: Optional[str] = None,
-        out_flops_vs_mfu: Optional[str] = None,
-        flops_per_gpu_hour: Optional[float] = None,
-        no_log_scale: bool = False,
-        job_name: Optional[str] = None,
-        save_to: Optional[Path] = None,
+        out_gpu_hours: str | None = None,
+        out_dist: str | None = None,
+        out_mfu_distribution: str | None = None,
+        out_flops_vs_mfu: str | None = None,
+        job_name: str | None = None,
+        save_to: Path | None = None,
     ) -> Path:
-        """Build a Slurm script to run plot_utils.py (FLOPs distribution, GPU hours, MFU plots)."""
+        name = job_name or "plot"
+        header = self._sbatch_header(job_name=name, gpus=0, mem_gb=2,
+                                     time_hours=1)
+        preamble = self._preamble()
 
         cmd_parts = [
             "python plot_utils.py",
@@ -317,224 +646,387 @@ class SlurmManager:
             cmd_parts.append(f'--out-mfu-distribution "{out_mfu_distribution}"')
         if out_flops_vs_mfu:
             cmd_parts.append(f'--out-flops-vs-mfu "{out_flops_vs_mfu}"')
-        if flops_per_gpu_hour is not None:
-            cmd_parts.append(f"--flops-per-gpu-hour {flops_per_gpu_hour}")
-        if no_log_scale:
-            cmd_parts.append("--no-log-scale")
         cmd = " \\\n    ".join(cmd_parts)
 
-        name = job_name or self.job_name
-        script = f"""#!/bin/bash
-                    #SBATCH --partition={self.partition}
-                    #SBATCH --job-name={name}
-                    #SBATCH --mem=2GB
-                    {self._account_line()}#SBATCH --output=logs/%x-%j.out
-                    #SBATCH --error=logs/%x-%j.err
+        script = f"""\
+                #!/bin/bash
+                {header}
+                
+                {preamble}
+                {cmd}
+                """
+        path = save_to or self.output_dir / "plot.sh"
+        return _write_script(path, script)
 
-                    {self._cluster_cfg.load_env}
 
-                    mkdir -p logs
-                    echo "Workingdir: $PWD"
-                    echo "Started at $(date)"
-
-                    {self._python_path_setup()}
-
-                    {cmd}
-                    """
-        path = save_to or (self.root_dir / "plot.sh")
-        Path(path).write_text(script)
-        return Path(path)
-
-    def build_sample_neps_configs_script(
+    # 10. Generate ALL scripts for a full pipeline
+    def generate_all(
         self,
-        config: str,
-        root_dir: str = "neps/neps_configs/Neps_Test",
+        hpo_config: str,
+        neps_root_dir: str,
         max_evaluations: int = 50,
+        start_config: int = 1,
+        end_config: int = 50,
         optimizer: str = "random",
-        gpus: int = 1,
-        time_hours: Optional[int] = None,
-        job_name: Optional[str] = None,
-        save_to: Optional[Path] = None,
-        **extra_args: Any,
-    ) -> Path:
-        """Build a Slurm script to sample NePS configs via hpo_neps.py (no training, just config sampling)."""
+    ) -> dict[str, Path]:
+        """
+        One-shot: generate every script needed for a full pipeline.
 
-        opt_choices = ("bo", "random", "regularized_evolution")
-        if optimizer not in opt_choices:
-            raise ValueError(f"optimizer must be one of {opt_choices}, got {optimizer!r}")
+        Returns a dict mapping script name to path.
+        """
+        out = self.output_dir
+        scripts: dict[str, Path] = {}
 
-        cmd_parts = [
-            "python -u neps/hpo_neps.py",
-            f'--config "{config}"',
-            f'--root_dir "{root_dir}"',
-            f"--max_evaluations {max_evaluations}",
-            f"--optimizer {optimizer}",
-        ]
-        for k, v in extra_args.items():
-            if v is None:
-                continue
-            arg = k.replace("_", "-")
-            if isinstance(v, bool):
-                if v:
-                    cmd_parts.append(f"--{arg}")
-            else:
-                cmd_parts.append(f'--{arg} "{v}"' if isinstance(v, str) and " " in v else f"--{arg} {v}")
-        cmd = " \\\n    ".join(cmd_parts)
+        scripts["sample_neps_configs"] = self.build_sample_neps_configs(
+            hpo_config=hpo_config,
+            neps_root_dir=neps_root_dir,
+            max_evaluations=max_evaluations,
+            optimizer=optimizer,
+        )
+        scripts["train_sequential"] = self.build_train_sequential(
+            neps_root_dir=neps_root_dir,
+            start_config=start_config,
+            end_config=end_config,
+        )
+        scripts["train_single"] = self.build_train_single(
+            config_path=f"{neps_root_dir}/configs/config_{start_config}/config.yaml",
+            config_number=start_config,
+            neps_root_dir=neps_root_dir,
+        )
+        scripts["train_array"] = self.build_train_array(
+            neps_root_dir=neps_root_dir,
+            array_start=start_config,
+            array_end=end_config,
+        )
+        scripts["validation_sequential"] = self.build_validation_sequential(
+            neps_root_dir=neps_root_dir,
+            start_config=start_config,
+            end_config=end_config,
+        )
+        scripts["validation_single"] = self.build_validation_single(
+            config_path=f"{neps_root_dir}/configs/config_{start_config}/config.yaml",
+            config_number=start_config,
+            neps_root_dir=neps_root_dir,
+        )
+        scripts["validation_array"] = self.build_validation_array(
+            neps_root_dir=neps_root_dir,
+            array_start=start_config,
+            array_end=end_config,
+        )
+        return scripts
 
-        name = job_name or self.job_name
-        time_s = (time_hours or self.time_hours) or 4
-        script = f"""#!/bin/bash
-                    #SBATCH --partition={self.partition}
-                    #SBATCH --job-name={name}
-                    #SBATCH --gres=gpu:{gpus}
-                    #SBATCH --cpus-per-task={self.cpus_per_task}
-                    #SBATCH --mem={self.mem_gb}GB
-                    #SBATCH --time={time_s}:00:00
-                    {self._account_line()}#SBATCH --output=logs/neps_sample/%x-%j.out
-                    #SBATCH --error=logs/neps_sample/%x-%j.err
-
-                    {self._cluster_cfg.load_env}
-
-                    mkdir -p logs/neps_sample
-                    echo "Workingdir: $PWD"
-                    echo "Started at $(date)"
-                    echo "Sampling NePS configs: config={config}, root_dir={root_dir}, max_evaluations={max_evaluations}"
-
-                    {self._python_path_setup()}
-
-                    {cmd}
-                    """
-        path = save_to or (self.root_dir / "sample_neps_configs.sh")
-        Path(path).write_text(script)
-        return Path(path)
-
-    def submit_job(self, script_path: Optional[Path] = None, wait: bool = False) -> Optional[int]:
-        """Submit the Slurm script using sbatch."""
-        path = script_path or self.script_path
-        if not path.exists():
-            raise FileNotFoundError(f"Slurm script not found: {path}")
+    # Submit
+    def submit(self, script_path: Path, wait: bool = False) -> int | None:
+        """Submit a generated script via sbatch."""
+        if not script_path.exists():
+            raise FileNotFoundError(f"Script not found: {script_path}")
 
         cmd = ["sbatch"]
         if wait:
             cmd.append("--wait")
-        cmd.append(str(path))
+        cmd.append(str(script_path))
 
         print("Submitting:", " ".join(cmd))
-        result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         stdout = result.stdout.strip()
-        job_id = None
         if stdout.startswith("Submitted batch job"):
             job_id = int(stdout.split()[-1])
-            self.job_id = job_id
-            print("Job ID:", job_id)
-        else:
-            print("STDOUT:", stdout)
-            if result.stderr:
-                print("STDERR:", result.stderr)
-        return job_id
+            print(f"Job ID: {job_id}")
+            return job_id
+        print("STDOUT:", stdout)
+        if result.stderr:
+            print("STDERR:", result.stderr)
+        return None
 
 
+
+# CLI
 def main():
-    """Generate and optionally submit a Slurm script. Pass root_dir and workspace_dir from the terminal."""
     import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument(
-        "--root-dir",
-        dest="root_dir",
-        type=Path,
-        default=Path.cwd(),
-        help="Directory where the Python interpreter lives (e.g. conda/venv prefix with bin/python); used to select Python version.",
+
+    parser = argparse.ArgumentParser(
+        description="Generate SLURM scripts for the scan_llm_bench pipeline.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""\
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        EXAMPLES
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        # Generate ALL scripts for a full pipeline (recommended first step):
+        python cluster/slurm_manager.py all \\
+            --hpo_config config/neps_configs/hpo_scale_search_space.yaml \\
+            --neps_root_dir neps/neps_configs/Neps_Test \\
+            --max_evaluations 100 --start_config 1 --end_config 100
+
+        # Generate just the config-sampling script:
+        python cluster/slurm_manager.py sample \\
+            --hpo_config config/neps_configs/hpo_scale_search_space.yaml \\
+            --neps_root_dir neps/neps_configs/Neps_Test \\
+            --max_evaluations 100
+
+        # Generate a sequential training script:
+        python cluster/slurm_manager.py train_seq \\
+            --neps_root_dir /work/.../neps/neps_configs/Neps_Test \\
+            --start_config 1 --end_config 50
+
+        # Generate a single-config training script:
+        python cluster/slurm_manager.py train_single \\
+            --config_path /work/.../configs/config_5/config.yaml \\
+            --config_number 5 \\
+            --neps_root_dir /work/.../neps/neps_configs/Neps_Test
+
+        # Generate a SLURM array job for training:
+        python cluster/slurm_manager.py train_array \\
+            --neps_root_dir /work/.../neps/neps_configs/Neps_Test \\
+            --start_config 1 --end_config 50 --max_concurrent 10
+
+        # Multi-GPU training (sequential, 4 GPUs with torchrun):
+        python cluster/slurm_manager.py train_seq \\
+            --neps_root_dir /work/.../neps/neps_configs/Neps_Test \\
+            --gpus 4
+
+        # Generate sequential validation script:
+        python cluster/slurm_manager.py valid_seq \\
+            --neps_root_dir /work/.../neps/neps_configs/Neps_Test \\
+            --start_config 1 --end_config 50
+
+        # Generate single validation script:
+        python cluster/slurm_manager.py valid_single \\
+            --config_path /work/.../configs/config_11/config.yaml \\
+            --config_number 11 \\
+            --neps_root_dir /work/.../neps/neps_configs/Neps_Test
+
+        # Generate validation array job:
+        python cluster/slurm_manager.py valid_array \\
+            --neps_root_dir /work/.../neps/neps_configs/Neps_Test \\
+            --start_config 1 --end_config 50
+
+        # Generate and immediately submit:
+        python cluster/slurm_manager.py train_seq \\
+            --neps_root_dir /work/.../neps/neps_configs/Neps_Test \\
+            --submit
+
+
+
+        TYPICAL WORKFLOW
+
+        # Step 1: Generate all scripts
+        python cluster/slurm_manager.py all \\
+            --hpo_config config/neps_configs/hpo_scale_search_space.yaml \\
+            --neps_root_dir neps/neps_configs/MyExperiment \\
+            --max_evaluations 50 --cluster mldlc2
+
+        # Step 2: Sample configs
+        sbatch cluster/generated/sample_neps_configs.sh
+
+        # Step 3: Train (pick one approach)
+        sbatch cluster/generated/run_neps_configs.sh          # sequential
+        sbatch cluster/generated/run_train_array.sh           # array (parallel)
+        sbatch cluster/generated/run_train.sh                 # single config
+
+        # Step 4: Validate
+        sbatch cluster/generated/run_validation.sh            # sequential
+        sbatch cluster/generated/run_validation_array.sh      # array (parallel)
+
+        # Override config range at submit time:
+        START_CONFIG=10 END_CONFIG=25 sbatch cluster/generated/run_neps_configs.sh
+        """),
     )
-    p.add_argument(
-        "--workspace-dir",
-        dest="workspace_dir",
-        type=Path,
-        default=Path.cwd(),
-        help="Directory where project files are; script will cd here and set PYTHONPATH.",
-    )
-    p.add_argument(
-        "--base_config", default="/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/config/chinchilla_scaling_configs/50M_1BT_scaled.yaml")
-    p.add_argument(
-        "--neps_results", default="/work/dlclarge2/sermaxha-scan_thesis/scan_llm_bench/neps/neps_configs/SlimPajama_50M_1BT")
-    p.add_argument("--start_config", type=int, default=17)
-    p.add_argument("--end_config", type=int, default=50)
-    p.add_argument(
-        "--mode",
-        choices=["sequential", "array", "single", "probe", "plot", "neps_sample"],
-        default="sequential",
-    )
-    p.add_argument("--submit", action="store_true")
-    p.add_argument("--out", default=None)
-    p.add_argument("--neps_configs_dir", default=None, help="For plot mode: NePS configs dir")
-    p.add_argument("--num_gpus", type=int, default=1, help="For plot mode: num-gpus")
-    p.add_argument("--out_gpu_hours", default=None, help="For plot mode: output path for GPU hours plot")
-    p.add_argument("--max_evaluations", type=int, default=50, help="For neps_sample: max_evaluations")
-    p.add_argument("--optimizer", default="random", help="For neps_sample: bo|random|regularized_evolution")
-    args = p.parse_args()
+
+    # -- shared arguments --
+    parser.add_argument("--cluster", default="mldlc2",
+                        choices=list(CLUSTER_CONFIGS),
+                        help="Cluster preset (default: mldlc2)")
+    parser.add_argument("--workspace_dir", type=Path, default=None,
+                        help="Project root; scripts written under this (default: parent of cluster/)")
+    parser.add_argument("--gpus", type=int, default=1,
+                        help="GPUs per job (>1 uses torchrun)")
+    parser.add_argument("--mem_gb", type=int, default=None)
+    parser.add_argument("--time_hours", type=int, default=None)
+    parser.add_argument("--cpus_per_task", type=int, default=None)
+    parser.add_argument("--partition", default=None)
+    parser.add_argument("--job_name", default=None)
+    parser.add_argument("--output_dir", default="cluster/generated",
+                        help="Where to write generated scripts (relative to workspace_dir)")
+    parser.add_argument("--submit", action="store_true",
+                        help="Submit the script after generating it")
+
+    sub = parser.add_subparsers(dest="mode", required=True)
+
+    # -- all --
+    p_all = sub.add_parser("all", help="Generate ALL pipeline scripts at once")
+    p_all.add_argument("--hpo_config", required=True)
+    p_all.add_argument("--neps_root_dir", required=True)
+    p_all.add_argument("--max_evaluations", type=int, default=50)
+    p_all.add_argument("--optimizer", default="random")
+    p_all.add_argument("--start_config", type=int, default=1)
+    p_all.add_argument("--end_config", type=int, default=50)
+
+    # -- sample --
+    p_sample = sub.add_parser("sample", help="Sample NePS configs (hpo_neps.py)")
+    p_sample.add_argument("--hpo_config", required=True)
+    p_sample.add_argument("--neps_root_dir", default="neps/neps_configs/Neps_Test")
+    p_sample.add_argument("--max_evaluations", type=int, default=50)
+    p_sample.add_argument("--optimizer", default="random")
+
+    # -- train_seq --
+    p_tseq = sub.add_parser("train_seq", help="Sequential training over configs")
+    p_tseq.add_argument("--neps_root_dir", required=True)
+    p_tseq.add_argument("--start_config", type=int, default=1)
+    p_tseq.add_argument("--end_config", type=int, default=50)
+
+    # -- train_single --
+    p_tsingle = sub.add_parser("train_single", help="Train a single config")
+    p_tsingle.add_argument("--config_path", required=True)
+    p_tsingle.add_argument("--config_number", type=int, default=None)
+    p_tsingle.add_argument("--neps_root_dir", default=None)
+
+    # -- train_array --
+    p_tarray = sub.add_parser("train_array", help="SLURM array job for training")
+    p_tarray.add_argument("--neps_root_dir", required=True)
+    p_tarray.add_argument("--start_config", type=int, default=1)
+    p_tarray.add_argument("--end_config", type=int, default=50)
+    p_tarray.add_argument("--max_concurrent", type=int, default=None,
+                          help="Max simultaneous array tasks (e.g. 10)")
+
+    # -- valid_seq --
+    p_vseq = sub.add_parser("valid_seq", help="Sequential validation over configs")
+    p_vseq.add_argument("--neps_root_dir", required=True)
+    p_vseq.add_argument("--start_config", type=int, default=1)
+    p_vseq.add_argument("--end_config", type=int, default=50)
+
+    # -- valid_single --
+    p_vsingle = sub.add_parser("valid_single", help="Validate a single config")
+    p_vsingle.add_argument("--config_path", required=True)
+    p_vsingle.add_argument("--config_number", type=int, required=True)
+    p_vsingle.add_argument("--neps_root_dir", required=True)
+
+    # -- valid_array --
+    p_varray = sub.add_parser("valid_array", help="SLURM array job for validation")
+    p_varray.add_argument("--neps_root_dir", required=True)
+    p_varray.add_argument("--start_config", type=int, default=1)
+    p_varray.add_argument("--end_config", type=int, default=50)
+    p_varray.add_argument("--max_concurrent", type=int, default=None)
+
+    # -- probe --
+    p_probe = sub.add_parser("probe", help="Probe max batch size")
+    p_probe.add_argument("--config_path", required=True)
+    p_probe.add_argument("--model_size", default=None,
+                         choices=["tiny", "small", "medium"])
+
+    # -- plot --
+    p_plot = sub.add_parser("plot", help="Generate plots")
+    p_plot.add_argument("--neps_configs_dir", required=True)
+    p_plot.add_argument("--num_gpus", type=int, default=1)
+    p_plot.add_argument("--out_gpu_hours", default=None)
+    p_plot.add_argument("--out_dist", default=None)
+    p_plot.add_argument("--out_mfu_distribution", default=None)
+    p_plot.add_argument("--out_flops_vs_mfu", default=None)
+
+    args = parser.parse_args()
+
+    # Default workspace to repo root (parent of cluster/) so paths are independent of cwd
+    workspace_dir = args.workspace_dir
+    if workspace_dir is None:
+        workspace_dir = Path(__file__).resolve().parent.parent
 
     mgr = SlurmManager(
-        job_name="Train_SlimPajama_50M_1BT_NePS",
-        root_dir=args.root_dir,
-        workspace_dir=args.workspace_dir,
+        cluster=args.cluster,
+        workspace_dir=workspace_dir,
+        gpus=args.gpus,
+        cpus_per_task=args.cpus_per_task,
+        mem_gb=args.mem_gb,
+        time_hours=args.time_hours,
+        partition=args.partition,
+        job_name=args.job_name or "scan_llm",
+        output_dir=args.output_dir,
     )
 
-    out_path = Path(args.out) if args.out else None
-
-    if args.mode == "sequential":
-        path = mgr.build_neps_configs_script(
-            base_config=args.base_config,
-            neps_results_dir=args.neps_results,
+    if args.mode == "all":
+        scripts = mgr.generate_all(
+            hpo_config=args.hpo_config,
+            neps_root_dir=args.neps_root_dir,
+            max_evaluations=args.max_evaluations,
             start_config=args.start_config,
             end_config=args.end_config,
-            save_to=out_path,
+            optimizer=args.optimizer,
         )
-    elif args.mode == "array":
-        path = mgr.build_array_job_script(
-            base_config=args.base_config,
-            neps_results_dir=args.neps_results,
+        print(f"\nGenerated {len(scripts)} scripts in {mgr.output_dir.resolve()}/:")
+        for name, path in scripts.items():
+            print(f"  {name:30s} -> {path}")
+        if args.submit:
+            print("\n--submit with 'all' mode: submitting sample_neps_configs only.")
+            mgr.submit(scripts["sample_neps_configs"])
+        return
+
+    path: Path
+    if args.mode == "sample":
+        path = mgr.build_sample_neps_configs(
+            hpo_config=args.hpo_config,
+            neps_root_dir=args.neps_root_dir,
+            max_evaluations=args.max_evaluations,
+            optimizer=args.optimizer,
+        )
+    elif args.mode == "train_seq":
+        path = mgr.build_train_sequential(
+            neps_root_dir=args.neps_root_dir,
+            start_config=args.start_config,
+            end_config=args.end_config,
+        )
+    elif args.mode == "train_single":
+        path = mgr.build_train_single(
+            config_path=args.config_path,
+            config_number=args.config_number,
+            neps_root_dir=args.neps_root_dir,
+        )
+    elif args.mode == "train_array":
+        path = mgr.build_train_array(
+            neps_root_dir=args.neps_root_dir,
             array_start=args.start_config,
             array_end=args.end_config,
-            save_to=out_path,
+            max_concurrent=args.max_concurrent,
         )
-    elif args.mode == "single":
-        config_file = f"{args.neps_results}/configs/config_{args.start_config}/config.yaml"
-        path = mgr.build_train_script(
-            base_config=args.base_config,
-            config_overrides=config_file,
-            config_number=args.start_config,
-            neps_report_dir=args.neps_results,
-            save_neps_report=True,
-            save_to=out_path,
+    elif args.mode == "valid_seq":
+        path = mgr.build_validation_sequential(
+            neps_root_dir=args.neps_root_dir,
+            start_config=args.start_config,
+            end_config=args.end_config,
+        )
+    elif args.mode == "valid_single":
+        path = mgr.build_validation_single(
+            config_path=args.config_path,
+            config_number=args.config_number,
+            neps_root_dir=args.neps_root_dir,
+        )
+    elif args.mode == "valid_array":
+        path = mgr.build_validation_array(
+            neps_root_dir=args.neps_root_dir,
+            array_start=args.start_config,
+            array_end=args.end_config,
+            max_concurrent=args.max_concurrent,
         )
     elif args.mode == "probe":
-        path = mgr.build_probe_batch_size_script(
-            config_path=args.base_config,
-            model_size=ModelSize.MEDIUM,
-            save_to=out_path,
+        model_sz = ModelSize(args.model_size) if args.model_size else None
+        path = mgr.build_probe_batch_size(
+            config_path=args.config_path,
+            model_size=model_sz,
         )
     elif args.mode == "plot":
-        if not args.neps_configs_dir or not args.out_gpu_hours:
-            p.error("--mode plot requires --neps_configs_dir and --out_gpu_hours")
-        path = mgr.build_plot_script(
+        path = mgr.build_plot(
             neps_configs_dir=args.neps_configs_dir,
             num_gpus=args.num_gpus,
             out_gpu_hours=args.out_gpu_hours,
-            save_to=out_path,
+            out_dist=args.out_dist,
+            out_mfu_distribution=args.out_mfu_distribution,
+            out_flops_vs_mfu=args.out_flops_vs_mfu,
         )
-    else:  # neps_sample
-        path = mgr.build_sample_neps_configs_script(
-            config=args.base_config,
-            root_dir=args.neps_results,
-            max_evaluations=args.max_evaluations,
-            optimizer=args.optimizer,
-            save_to=out_path,
-        )
+    else:
+        parser.error(f"Unknown mode: {args.mode}")
+        return
 
-    print(f"Wrote script to {path}")
-
+    print(f"Wrote script -> {path}")
     if args.submit:
-        mgr.submit_job(path)
+        mgr.submit(path)
 
 
 if __name__ == "__main__":

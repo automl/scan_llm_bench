@@ -2,6 +2,7 @@ import os
 import re
 import json
 import torch
+import yaml
 import utils
 
 
@@ -46,6 +47,35 @@ def save_checkpoint(step, model, engine, cfg, metrics):
   metrics_path = os.path.join(exp_dir, 'metrics.json')
   with open(metrics_path, 'w') as f:
     json.dump(dict(metrics), f)
+
+
+def update_config_yaml_for_resume(config_path: str, step: int, cfg) -> None:
+  """
+  Update the config YAML to make the config ready for evaluation on the validation dataset.
+
+  Sets:
+    resume: true
+    resume_step: step (last saved step)
+    resume_exp_name: path relative to cfg.out_dir where the checkpoint was saved.
+      This matches get_exp_dir_path(cfg): e.g. exp_name/job_<job_cluster> for a
+      single config, or exp_name/job_<job_cluster>/config_<config_number> for
+      multiple NePS configs in the same job.
+  """
+  exp_dir = utils.get_exp_dir_path(cfg)
+  resume_exp_name = os.path.relpath(exp_dir, cfg.out_dir)
+  resume_exp_name = resume_exp_name.replace('\\', '/')
+
+  with open(config_path, 'r') as f:
+    config_dict = yaml.safe_load(f)
+
+  config_dict['resume'] = True
+  config_dict['resume_step'] = step
+  config_dict['resume_exp_name'] = resume_exp_name
+
+  with open(config_path, 'w') as f:
+    yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
+
+  print(f'Updated {config_path}: resume=true, resume_step={step}, resume_exp_name={resume_exp_name!r}')
 
 
 def maybe_load_checkpoint(cfg):
