@@ -181,14 +181,16 @@ def plot_flops_per_gpu_hour(
     gpu_hours = [flops / flops_per_gpu_hour for _, flops in flops_data]
     if not gpu_hours:
         raise ValueError("flops_data is empty; nothing to plot.")
-
+    import numpy as np
+    total_hours = np.sum(gpu_hours)
+    print(f"The total training time in {num_gpus} gpus for these configs is {total_hours} hours.")
     if ax is None:
         fig, ax = plt.subplots()
     if log_scale:
-        import numpy as np
 
         hours_arr = np.array(gpu_hours, dtype=float)
         hours_arr = np.log10(np.clip(hours_arr, 1e-12, None))
+
         ax.hist(hours_arr, **kwargs)
         def format_log_hours(x, pos):
             """Converts log10 exponent back to a time string."""
@@ -316,31 +318,31 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--neps_configs_dir",
-        default="neps/neps_configs/Neps_Scale_Search_Space/configs",
+        default="neps/neps_configs/Possible_1k_Neps_Scale_Search_Space/configs",
         type=str,
         help="Path to NePS configs directory (e.g. neps/neps_configs/MyExp/configs)",
     )
     parser.add_argument(
         "--out-dist",
-        default="plots/scale_flops_dist.png",
+        default="plots/test.png",
         type=str,
         help="Save FLOPs distribution figure to this path",
     )
     parser.add_argument(
         "--out-gpu-hours",
-        default="plots/scale_gpu_hours.png",
+        default="plots/test1.png",
         type=str,
         help="Save FLOPs per GPU hour figure to this path",
     )
     parser.add_argument(
         "--out-mfu-distribution",
-        default="plots/scale_mfu_dist.png",
+        default="plots/test2.png",
         type=str,
         help="Save MFU distribution figure to this path",
     )
     parser.add_argument(
         "--out-flops-vs-mfu",
-        default="plots/scale_flops_vs_mfu.png",
+        default="plots/test3.png",
         type=str,
         help="Save FLOPs vs MFU figure to this path",
     )

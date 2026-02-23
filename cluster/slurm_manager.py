@@ -149,15 +149,14 @@ class SlurmManager:
 
     def _preamble(self, log_subdir: str = "") -> str:
         log_dir = f"logs/{log_subdir}" if log_subdir else "logs"
-        return f"""\
-                {self._cluster_cfg.load_env}
-                export PYTHONPATH="${{PWD}}:${{PYTHONPATH}}"
-                
-                mkdir -p {log_dir}
-                echo "Workingdir: $PWD"
-                echo "Started at $(date)"
-                echo "Running job $SLURM_JOB_NAME (JID $SLURM_JOB_ID) on $SLURM_JOB_PARTITION"
-                """
+        return f"""{self._cluster_cfg.load_env}
+export PYTHONPATH="${{PWD}}:${{PYTHONPATH}}"
+
+mkdir -p {log_dir}
+echo "Workingdir: $PWD"
+echo "Started at $(date)"
+echo "Running job $SLURM_JOB_NAME (JID $SLURM_JOB_ID) on $SLURM_JOB_PARTITION"
+"""
 
     def _run_cmd(self, script: str, args: str, gpus: int | None = None) -> str:
         """Wrap a python command with optional torchrun for multi-GPU."""
@@ -199,17 +198,16 @@ class SlurmManager:
             f"    --optimizer {optimizer}"
         )
 
-        script = f"""\
-                #!/bin/bash
-                {header}
-                
-                {preamble}
-                echo "Sampling NePS configs -> {neps_root_dir}"
-                
-                {cmd}
-                
-                echo "Finished at $(date)"
-                """
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+echo "Sampling NePS configs -> {neps_root_dir}"
+
+{cmd}
+
+echo "Finished at $(date)"
+"""
         path = save_to or self.output_dir / "sample_neps_configs.sh"
         return _write_script(path, script)
 
@@ -234,85 +232,84 @@ class SlurmManager:
         train_cmd = self._run_cmd("train.py", '"${TRAIN_ARGS[@]}"', gpus=g)
         report_flag = '1' if save_neps_report else '0'
 
-        script = f"""\
-                #!/bin/bash
-                {header}
-                
-                {preamble}
-                NEPS_RESULTS_DIR="{neps_root_dir}"
-                CONFIGS_DIR="${{NEPS_RESULTS_DIR}}/configs"
-                START_CONFIG="${{START_CONFIG:-{start_config}}}"
-                END_CONFIG="${{END_CONFIG:-{end_config}}}"
-                SAVE_NEPS_REPORT="${{SAVE_NEPS_REPORT:-{report_flag}}}"
-                
-                echo "=============================================="
-                echo "NePS results dir: $NEPS_RESULTS_DIR"
-                echo "Configs dir:      $CONFIGS_DIR"
-                echo "Config range:     ${{START_CONFIG}} to ${{END_CONFIG}}"
-                echo "=============================================="
-                
-                total_configs=0
-                for config_dir in $(find "$CONFIGS_DIR" -maxdepth 1 -type d -name "config_*" | sort -V); do
-                    config_num=$(basename "$config_dir" | sed 's/config_//')
-                    if [[ "$config_num" =~ ^[0-9]+$ ]] && [[ "$config_num" -ge "$START_CONFIG" ]] && [[ "$config_num" -le "$END_CONFIG" ]]; then
-                        ((total_configs++))
-                    fi
-                done
-                echo "Found $total_configs configurations to run"
-                echo ""
-                
-                completed=0
-                failed=0
-                start_total=$(date +%s)
-                
-                for config_dir in $(find "$CONFIGS_DIR" -maxdepth 1 -type d -name "config_*" | sort -V); do
-                    config_num=$(basename "$config_dir" | sed 's/config_//')
-                    if [[ ! "$config_num" =~ ^[0-9]+$ ]]; then continue; fi
-                    if [[ "$config_num" -lt "$START_CONFIG" ]] || [[ "$config_num" -gt "$END_CONFIG" ]]; then continue; fi
-                
-                    config_file="${{config_dir}}/config.yaml"
-                    if [[ ! -f "$config_file" ]]; then
-                        echo "WARNING: No config.yaml in $config_dir, skipping"
-                        continue
-                    fi
-                
-                    echo "=============================================="
-                    echo "Running config_${{config_num}} ($(($completed + $failed + 1))/$total_configs)"
-                    echo "Started at $(date)"
-                    echo "=============================================="
-                
-                    start_config=$(date +%s)
-                
-                    TRAIN_ARGS=(--config="$config_file" --job_cluster="$SLURM_JOB_ID" --config_number="$config_num" --neps_root_dir="$NEPS_RESULTS_DIR")
-                    [[ "$SAVE_NEPS_REPORT" == "1" ]] && TRAIN_ARGS+=(--save_neps_report)
-                
-                    {train_cmd}
-                
-                    exit_code=$?
-                    end_config=$(date +%s)
-                    runtime_config=$((end_config - start_config))
-                
-                    if [[ $exit_code -eq 0 ]]; then
-                        echo "config_${{config_num}} completed successfully in ${{runtime_config}}s"
-                        ((completed++))
-                    else
-                        echo "ERROR: config_${{config_num}} failed with exit code $exit_code"
-                        ((failed++))
-                    fi
-                    echo ""
-                done
-                
-                end_total=$(date +%s)
-                runtime_total=$((end_total - start_total))
-                
-                echo "=============================================="
-                echo "All configurations processed!"
-                echo "Completed: $completed / $total_configs"
-                echo "Failed:    $failed"
-                echo "Total runtime: ${{runtime_total}}s ($(($runtime_total / 60)) minutes)"
-                echo "Finished at $(date)"
-                echo "=============================================="
-                """
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+NEPS_RESULTS_DIR="{neps_root_dir}"
+CONFIGS_DIR="${{NEPS_RESULTS_DIR}}/configs"
+START_CONFIG="${{START_CONFIG:-{start_config}}}"
+END_CONFIG="${{END_CONFIG:-{end_config}}}"
+SAVE_NEPS_REPORT="${{SAVE_NEPS_REPORT:-{report_flag}}}"
+
+echo "=============================================="
+echo "NePS results dir: $NEPS_RESULTS_DIR"
+echo "Configs dir:      $CONFIGS_DIR"
+echo "Config range:     ${{START_CONFIG}} to ${{END_CONFIG}}"
+echo "=============================================="
+
+total_configs=0
+for config_dir in $(find "$CONFIGS_DIR" -maxdepth 1 -type d -name "config_*" | sort -V); do
+    config_num=$(basename "$config_dir" | sed 's/config_//')
+    if [[ "$config_num" =~ ^[0-9]+$ ]] && [[ "$config_num" -ge "$START_CONFIG" ]] && [[ "$config_num" -le "$END_CONFIG" ]]; then
+        ((total_configs++))
+    fi
+done
+echo "Found $total_configs configurations to run"
+echo ""
+
+completed=0
+failed=0
+start_total=$(date +%s)
+
+for config_dir in $(find "$CONFIGS_DIR" -maxdepth 1 -type d -name "config_*" | sort -V); do
+    config_num=$(basename "$config_dir" | sed 's/config_//')
+    if [[ ! "$config_num" =~ ^[0-9]+$ ]]; then continue; fi
+    if [[ "$config_num" -lt "$START_CONFIG" ]] || [[ "$config_num" -gt "$END_CONFIG" ]]; then continue; fi
+
+    config_file="${{config_dir}}/config.yaml"
+    if [[ ! -f "$config_file" ]]; then
+        echo "WARNING: No config.yaml in $config_dir, skipping"
+        continue
+    fi
+
+    echo "=============================================="
+    echo "Running config_${{config_num}} ($(($completed + $failed + 1))/$total_configs)"
+    echo "Started at $(date)"
+    echo "=============================================="
+
+    start_config=$(date +%s)
+
+    TRAIN_ARGS=(--config="$config_file" --job_cluster="$SLURM_JOB_ID" --config_number="$config_num" --neps_root_dir="$NEPS_RESULTS_DIR")
+    [[ "$SAVE_NEPS_REPORT" == "1" ]] && TRAIN_ARGS+=(--save_neps_report)
+
+    {train_cmd}
+
+    exit_code=$?
+    end_config=$(date +%s)
+    runtime_config=$((end_config - start_config))
+
+    if [[ $exit_code -eq 0 ]]; then
+        echo "config_${{config_num}} completed successfully in ${{runtime_config}}s"
+        ((completed++))
+    else
+        echo "ERROR: config_${{config_num}} failed with exit code $exit_code"
+        ((failed++))
+    fi
+    echo ""
+done
+
+end_total=$(date +%s)
+runtime_total=$((end_total - start_total))
+
+echo "=============================================="
+echo "All configurations processed!"
+echo "Completed: $completed / $total_configs"
+echo "Failed:    $failed"
+echo "Total runtime: ${{runtime_total}}s ($(($runtime_total / 60)) minutes)"
+echo "Finished at $(date)"
+echo "=============================================="
+"""
         path = save_to or self.output_dir / "run_neps_configs.sh"
         return _write_script(path, script)
 
@@ -345,20 +342,19 @@ class SlurmManager:
             args += " --save_neps_report"
         train_cmd = self._run_cmd("train.py", args, gpus=g)
 
-        script = f"""\
-                #!/bin/bash
-                {header}
-                
-                {preamble}
-                start=$(date +%s)
-                
-                {train_cmd}
-                
-                end=$(date +%s)
-                runtime=$((end - start))
-                echo "Job execution complete."
-                echo "Runtime: ${{runtime}}s"
-                """
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+start=$(date +%s)
+
+{train_cmd}
+
+end=$(date +%s)
+runtime=$((end - start))
+echo "Job execution complete."
+echo "Runtime: ${{runtime}}s"
+"""
         path = save_to or self.output_dir / "run_train.sh"
         return _write_script(path, script)
 
@@ -397,24 +393,23 @@ class SlurmManager:
             gpus=g,
         )
 
-        script = f"""\
-                #!/bin/bash
-                {header}
-                
-                {preamble}
-                CONFIGS_DIR="{neps_root_dir}/configs"
-                CONFIG_DIR="${{CONFIGS_DIR}}/config_${{SLURM_ARRAY_TASK_ID}}"
-                CONFIG_FILE="${{CONFIG_DIR}}/config.yaml"
-                
-                echo "Array task ${{SLURM_ARRAY_TASK_ID}}"
-                
-                if [[ ! -f "$CONFIG_FILE" ]]; then
-                    echo "ERROR: No config at $CONFIG_FILE"
-                    exit 1
-                fi
-                
-                {train_cmd}
-                """
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+CONFIGS_DIR="{neps_root_dir}/configs"
+CONFIG_DIR="${{CONFIGS_DIR}}/config_${{SLURM_ARRAY_TASK_ID}}"
+CONFIG_FILE="${{CONFIG_DIR}}/config.yaml"
+
+echo "Array task ${{SLURM_ARRAY_TASK_ID}}"
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "ERROR: No config at $CONFIG_FILE"
+    exit 1
+fi
+
+{train_cmd}
+"""
         path = save_to or self.output_dir / "run_train_array.sh"
         return _write_script(path, script)
 
@@ -436,69 +431,68 @@ class SlurmManager:
         preamble = self._preamble(log_subdir="validation")
         report_flag = '1' if save_neps_report else '0'
 
-        script = f"""\
-                #!/bin/bash
-                {header}
-                
-                {preamble}
-                NEPS_RESULTS_DIR="{neps_root_dir}"
-                CONFIGS_DIR="${{NEPS_RESULTS_DIR}}/configs"
-                START_CONFIG="${{START_CONFIG:-{start_config}}}"
-                END_CONFIG="${{END_CONFIG:-{end_config}}}"
-                SAVE_NEPS_REPORT="${{SAVE_NEPS_REPORT:-{report_flag}}}"
-                
-                echo "=============================================="
-                echo "Validation sweep"
-                echo "NePS results dir: $NEPS_RESULTS_DIR"
-                echo "Config range:     ${{START_CONFIG}} to ${{END_CONFIG}}"
-                echo "=============================================="
-                
-                completed=0
-                failed=0
-                start_total=$(date +%s)
-                
-                for config_dir in $(find "$CONFIGS_DIR" -maxdepth 1 -type d -name "config_*" | sort -V); do
-                    config_num=$(basename "$config_dir" | sed 's/config_//')
-                    if [[ ! "$config_num" =~ ^[0-9]+$ ]]; then continue; fi
-                    if [[ "$config_num" -lt "$START_CONFIG" ]] || [[ "$config_num" -gt "$END_CONFIG" ]]; then continue; fi
-                
-                    config_file="${{config_dir}}/config.yaml"
-                    if [[ ! -f "$config_file" ]]; then
-                        echo "WARNING: No config.yaml in $config_dir, skipping"
-                        continue
-                    fi
-                
-                    echo "=============================================="
-                    echo "Validating config_${{config_num}} at $(date)"
-                    echo "=============================================="
-                
-                    python -u validation.py \
-                        --config="$config_file" \
-                        --config_number="$config_num" \
-                        --job_cluster="$SLURM_JOB_ID" \
-                        --neps_root_dir="$NEPS_RESULTS_DIR"
-                
-                    if [[ $? -eq 0 ]]; then
-                        echo "config_${{config_num}} validation OK"
-                        ((completed++))
-                    else
-                        echo "ERROR: config_${{config_num}} validation failed"
-                        ((failed++))
-                    fi
-                    echo ""
-                done
-                
-                end_total=$(date +%s)
-                runtime_total=$((end_total - start_total))
-                
-                echo "=============================================="
-                echo "Validation complete!"
-                echo "Completed: $completed"
-                echo "Failed:    $failed"
-                echo "Total runtime: ${{runtime_total}}s ($(($runtime_total / 60)) minutes)"
-                echo "Finished at $(date)"
-                echo "=============================================="
-                """
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+NEPS_RESULTS_DIR="{neps_root_dir}"
+CONFIGS_DIR="${{NEPS_RESULTS_DIR}}/configs"
+START_CONFIG="${{START_CONFIG:-{start_config}}}"
+END_CONFIG="${{END_CONFIG:-{end_config}}}"
+SAVE_NEPS_REPORT="${{SAVE_NEPS_REPORT:-{report_flag}}}"
+
+echo "=============================================="
+echo "Validation sweep"
+echo "NePS results dir: $NEPS_RESULTS_DIR"
+echo "Config range:     ${{START_CONFIG}} to ${{END_CONFIG}}"
+echo "=============================================="
+
+completed=0
+failed=0
+start_total=$(date +%s)
+
+for config_dir in $(find "$CONFIGS_DIR" -maxdepth 1 -type d -name "config_*" | sort -V); do
+    config_num=$(basename "$config_dir" | sed 's/config_//')
+    if [[ ! "$config_num" =~ ^[0-9]+$ ]]; then continue; fi
+    if [[ "$config_num" -lt "$START_CONFIG" ]] || [[ "$config_num" -gt "$END_CONFIG" ]]; then continue; fi
+
+    config_file="${{config_dir}}/config.yaml"
+    if [[ ! -f "$config_file" ]]; then
+        echo "WARNING: No config.yaml in $config_dir, skipping"
+        continue
+    fi
+
+    echo "=============================================="
+    echo "Validating config_${{config_num}} at $(date)"
+    echo "=============================================="
+
+    python -u validation.py \
+        --config="$config_file" \
+        --config_number="$config_num" \
+        --job_cluster="$SLURM_JOB_ID" \
+        --neps_root_dir="$NEPS_RESULTS_DIR"
+
+    if [[ $? -eq 0 ]]; then
+        echo "config_${{config_num}} validation OK"
+        ((completed++))
+    else
+        echo "ERROR: config_${{config_num}} validation failed"
+        ((failed++))
+    fi
+    echo ""
+done
+
+end_total=$(date +%s)
+runtime_total=$((end_total - start_total))
+
+echo "=============================================="
+echo "Validation complete!"
+echo "Completed: $completed"
+echo "Failed:    $failed"
+echo "Total runtime: ${{runtime_total}}s ($(($runtime_total / 60)) minutes)"
+echo "Finished at $(date)"
+echo "=============================================="
+"""
         path = save_to or self.output_dir / "run_validation.sh"
         return _write_script(path, script)
 
@@ -520,24 +514,23 @@ class SlurmManager:
         preamble = self._preamble(log_subdir="validation")
         report_flag = "--save_neps_report" if save_neps_report else ""
 
-        script = f"""\
-                #!/bin/bash
-                {header}
-                
-                {preamble}
-                start=$(date +%s)
-                
-                python -u validation.py \
-                    --config="{config_path}" \
-                    --config_number={config_number} \
-                    --job_cluster="$SLURM_JOB_ID" \
-                    --neps_root_dir="{neps_root_dir}" \
-                    {report_flag}
-                
-                end=$(date +%s)
-                runtime=$((end - start))
-                echo "Validation complete. Runtime: ${{runtime}}s"
-                """
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+start=$(date +%s)
+
+python -u validation.py \
+    --config="{config_path}" \
+    --config_number={config_number} \
+    --job_cluster="$SLURM_JOB_ID" \
+    --neps_root_dir="{neps_root_dir}" \
+    {report_flag}
+
+end=$(date +%s)
+runtime=$((end - start))
+echo "Validation complete. Runtime: ${{runtime}}s"
+"""
         path = save_to or self.output_dir / "run_validation_single.sh"
         return _write_script(path, script)
 
@@ -564,29 +557,28 @@ class SlurmManager:
         preamble = self._preamble(log_subdir="validation")
         report_flag = "--save_neps_report" if save_neps_report else ""
 
-        script = f"""\
-                #!/bin/bash
-                {header}
-                
-                {preamble}
-                CONFIGS_DIR="{neps_root_dir}/configs"
-                CONFIG_DIR="${{CONFIGS_DIR}}/config_${{SLURM_ARRAY_TASK_ID}}"
-                CONFIG_FILE="${{CONFIG_DIR}}/config.yaml"
-                
-                echo "Validation array task ${{SLURM_ARRAY_TASK_ID}}"
-                
-                if [[ ! -f "$CONFIG_FILE" ]]; then
-                    echo "ERROR: No config at $CONFIG_FILE"
-                    exit 1
-                fi
-                
-                python -u validation.py \
-                    --config="$CONFIG_FILE" \
-                    --config_number="${{SLURM_ARRAY_TASK_ID}}" \
-                    --job_cluster="$SLURM_JOB_ID" \
-                    --neps_root_dir="{neps_root_dir}" \
-                    {report_flag}
-                """
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+CONFIGS_DIR="{neps_root_dir}/configs"
+CONFIG_DIR="${{CONFIGS_DIR}}/config_${{SLURM_ARRAY_TASK_ID}}"
+CONFIG_FILE="${{CONFIG_DIR}}/config.yaml"
+
+echo "Validation array task ${{SLURM_ARRAY_TASK_ID}}"
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "ERROR: No config at $CONFIG_FILE"
+    exit 1
+fi
+
+python -u validation.py \
+    --config="$CONFIG_FILE" \
+    --config_number="${{SLURM_ARRAY_TASK_ID}}" \
+    --job_cluster="$SLURM_JOB_ID" \
+    --neps_root_dir="{neps_root_dir}" \
+    {report_flag}
+"""
         path = save_to or self.output_dir / "run_validation_array.sh"
         return _write_script(path, script)
 
@@ -605,13 +597,12 @@ class SlurmManager:
         preamble = self._preamble()
         size_arg = f" --model_size={model_size.value}" if model_size else ""
 
-        script = f"""\
-                #!/bin/bash
-                {header}
-                
-                {preamble}
-                python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
-                """
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
+"""
         path = save_to or self.output_dir / "probe_batch_size.sh"
         return _write_script(path, script)
 
@@ -648,13 +639,12 @@ class SlurmManager:
             cmd_parts.append(f'--out-flops-vs-mfu "{out_flops_vs_mfu}"')
         cmd = " \\\n    ".join(cmd_parts)
 
-        script = f"""\
-                #!/bin/bash
-                {header}
-                
-                {preamble}
-                {cmd}
-                """
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+{cmd}
+"""
         path = save_to or self.output_dir / "plot.sh"
         return _write_script(path, script)
 
