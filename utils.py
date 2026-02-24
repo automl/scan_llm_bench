@@ -211,7 +211,7 @@ def _safe_exp(loss) -> float:
         return float('inf')
 
 
-def log(cfg, metrics, micro_step, train_loss, train_loss_array, valid_loss, optimizer, world_size):
+def log(cfg, metrics, micro_step, train_loss, train_loss_array, optimizer, world_size):
     """Update metrics, print to console, log on wandb."""
 
     if isinstance(train_loss_array, list):
@@ -230,9 +230,10 @@ def log(cfg, metrics, micro_step, train_loss, train_loss_array, valid_loss, opti
         'train/ppl_avg': _safe_exp(train_loss_avg),
     }
 
-    if valid_loss is not None:
-        new_metrics['valid/loss'] = valid_loss
-        new_metrics['valid/ppl'] = _safe_exp(valid_loss)
+    # Removed valid loss due to separation of training and validation loops
+    # if valid_loss is not None:
+    #     new_metrics['valid/loss'] = valid_loss
+    #     new_metrics['valid/ppl'] = _safe_exp(valid_loss)
 
     for k, v in new_metrics.items():
         metrics[k].append(v)
