@@ -15,10 +15,24 @@ from models.params_flops import total_training_flops, format_flops
 import neps
 
 
-# L40 GPU: ~181 TFLOPS FP16/BF16. FLOPs per GPU-hour = 181e12 * 3600
-L40_PEAK_FLOPS_PER_SEC = 181e12
-DEFAULT_FLOPS_PER_GPU_HOUR = L40_PEAK_FLOPS_PER_SEC * 3600  # ~6.52e17 FLOPs per GPU-hour for 1x L40
+# L40 GPU: ~181 TFLOPS FP16/BF16.
+# A100 GPU: ~312 TFLOPS FP16/BF16.
+# H100 GPU: ~989 TFLOPS FP16/BF16.
+# H200 GPU: ~989 TFLOPS FP16/BF16
+GPU_PROFILES = {
+    "L40": 181e12,
+    "A100": 312e12,
+    "H100": 989e12,
+    "H200": 989e12,
+}
+
+DEFAULT_GPU = "L40"
 EXPECTED_MFU = 0.32
+
+def get_flops_per_gpu_hour(gpu_name: str) -> float:
+    """Returns peak FLOPs per hour for a specific GPU type."""
+    peak_flops_s = GPU_PROFILES.get(gpu_name, GPU_PROFILES[DEFAULT_GPU])
+    return peak_flops_s * 3600
 
 
 def _parse_expand(expand_val) -> float:
@@ -146,84 +160,77 @@ def plot_flops_distribution(
 
 
 def plot_flops_per_gpu_hour(
-    flops_data: list[tuple[str, int]],
-    *,
-    flops_per_gpu_hour: Optional[float] = None,
-    num_gpus: Optional[int] = None,
-    gpu_name: str = "L40",
-    title: Optional[str] = None,
-    log_scale: bool = True,
-    ax=None,
-    **kwargs,
+        flops_data: list[tuple[str, int]],
+        *,
+        flops_per_gpu_hour: Optional[float] = None,
+        num_gpus: int = 1,
+        gpu_name: str = "L40",
+        title: Optional[str] = None,
+        log_scale: bool = True,
+        ax=None,
+        **kwargs,
 ):
-    """
-    Plot how long (in GPU hours) each config would take on the given GPU.
-
-    For each config, training time in GPU hours = config_FLOPs / flops_per_gpu_hour.
-    Uses L40 default throughput (~181 TFLOPS FP16 → FLOPs per GPU-hour) if not specified.
-
-    Args:
-        flops_data: List of (config_id, flops) from get_flops_from_neps_configs.
-        flops_per_gpu_hour: FLOPs that one GPU can do in one hour. If None, uses
-            DEFAULT_FLOPS_PER_GPU_HOUR (L40).
-        gpu_name: Label for the GPU (used in default title).
-        title: Plot title. If None, uses default with gpu_name.
-        log_scale: If True, x-axis (GPU hours) is log scale.
-        ax: Matplotlib axes. If None, uses current or creates new figure.
-        **kwargs: Passed to matplotlib hist.
-    """
     import matplotlib.pyplot as plt
     import matplotlib.ticker as ticker
-    
-    if flops_per_gpu_hour is None:
-        flops_per_gpu_hour = DEFAULT_FLOPS_PER_GPU_HOUR * EXPECTED_MFU * num_gpus
+    import numpy as np
 
-    gpu_hours = [flops / flops_per_gpu_hour for _, flops in flops_data]
+    # Calculate throughput based on selected GPU and MFU
+    if flops_per_gpu_hour is None:
+        base_flops_per_hour = get_flops_per_gpu_hour(gpu_name)
+        # Total throughput = (Peak per GPU * num_gpus) * Efficiency
+        total_throughput_per_hour = base_flops_per_hour * num_gpus * EXPECTED_MFU
+    else:
+        total_throughput_per_hour = flops_per_gpu_hour
+
+    gpu_hours = [flops / total_throughput_per_hour for _, flops in flops_data]
+
     if not gpu_hours:
         raise ValueError("flops_data is empty; nothing to plot.")
-    import numpy as np
+
     total_hours = np.sum(gpu_hours)
-    print(f"The total training time in {num_gpus} gpus for these configs is {total_hours} hours.")
+    print(f"--- Projection for {num_gpus}x {gpu_name} ---")
+    print(f"Total projected training time: {total_hours:.2f} hours (at {EXPECTED_MFU * 100}% MFU)")
+
     if ax is None:
         fig, ax = plt.subplots()
-    if log_scale:
 
+    if log_scale:
         hours_arr = np.array(gpu_hours, dtype=float)
         hours_arr = np.log10(np.clip(hours_arr, 1e-12, None))
-
         ax.hist(hours_arr, **kwargs)
+
         def format_log_hours(x, pos):
-            """Converts log10 exponent back to a time string."""
-            actual_hours = 10**x
-            if actual_hours >= 1:
-                return f"{actual_hours:.1f}h"
-            else:
-                # For values < 1 hour, show as decimals or minutes
-                # return f"{actual_hours*60:.0f}m" # Optional: show in minutes
-                return f"{actual_hours:.2f}h"
+            actual_hours = 10 ** x
+            return f"{actual_hours:.1f}h" if actual_hours >= 1 else f"{actual_hours:.2f}h"
+
         ax.xaxis.set_major_formatter(ticker.FuncFormatter(format_log_hours))
-        ax.set_xlabel("Training time (GPU hours, log10)")
+        ax.set_xlabel(f"Training time on {num_gpus}x {gpu_name} (GPU hours, log10)")
     else:
         ax.hist(gpu_hours, **kwargs)
-        ax.set_xlabel("Training time (GPU hours)")
+        ax.set_xlabel(f"Training time on {num_gpus}x {gpu_name} (GPU hours)")
+
     if title is None:
-        title = f"Training time on {gpu_name} (FLOPs / GPU-hour)"
+        title = f"Projected Time: {gpu_name} Cluster (MFU={EXPECTED_MFU * 100}%)"
     ax.set_ylabel("Count")
     ax.set_title(title)
     return ax
 
+
 def get_metrics_from_neps_reports(
-    neps_configs_dir: str | Path,
-    report_yaml_name: str = "report.yaml",
-    num_gpus: int = 1,
+        neps_configs_dir: str | Path,
+        report_yaml_name: str = "report.yaml",
+        num_gpus: int = 1,
+        gpu_name: str = "L40",
 ) -> List[dict]:
     """
-    Scans NePS directory for report.yaml files and extracts 
+    Scans NePS directory for report.yaml files and extracts
     FLOPs (cost) and actual time taken.
     """
     root = Path(neps_configs_dir)
     if not root.is_dir():
         raise NotADirectoryError(f"Not a directory: {root}")
+
+    peak_flops_per_sec = GPU_PROFILES.get(gpu_name, GPU_PROFILES["L40"])
 
     results = []
     for config_dir in sorted(root.iterdir()):
@@ -236,26 +243,29 @@ def get_metrics_from_neps_reports(
         try:
             with open(report_path, "r") as f:
                 report = yaml.safe_load(f)
-            
+
             extra = report.get("extra", {})
             total_flops = report.get("cost")
             duration = extra.get("time_duration_seconds")
 
             if total_flops and duration:
-                achieved_tflops = (total_flops / duration)
-                mfu = (achieved_tflops / (L40_PEAK_FLOPS_PER_SEC * num_gpus)) * 100
+                # achieved_flops_per_sec = Total FLOPs / time in seconds
+                achieved_flops_per_sec = (total_flops / duration)
+
+                # MFU = Achieved / (Peak_Per_GPU * Num_GPUs)
+                mfu = (achieved_flops_per_sec / (peak_flops_per_sec * num_gpus)) * 100
 
                 results.append({
                     "config_id": config_dir.name,
                     "total_flops": total_flops,
                     "duration": duration,
                     "mfu": mfu,
-                    "achieved_tflops_s": achieved_tflops / 1e12
+                    "achieved_tflops_s": achieved_flops_per_sec / 1e12
                 })
         except Exception as e:
             print(f"Skipping {config_dir.name} due to error: {e}")
             continue
-            
+
     return results
 
 def plot_mfu_distribution(
@@ -330,7 +340,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--out-gpu-hours",
-        default="plots/test1.png",
+        default="plots/h200/test1.png",
         type=str,
         help="Save FLOPs per GPU hour figure to this path",
     )
@@ -347,10 +357,17 @@ if __name__ == "__main__":
         help="Save FLOPs vs MFU figure to this path",
     )
     parser.add_argument(
+        "--gpu-name",
+        type=str,
+        default="H200",
+        choices=["L40", "A100", "H100", "H200"],
+        help="GPU type for time calculation"
+    )
+    parser.add_argument(
         "--flops-per-gpu-hour",
         type=float,
         default=None,
-        help=f"FLOPs per GPU-hour (default: L40 ~{DEFAULT_FLOPS_PER_GPU_HOUR:.2e})",
+        help=f"FLOPs per GPU-hour (default: L40)",
     )
     parser.add_argument(
         "--num-gpus",
@@ -386,6 +403,7 @@ if __name__ == "__main__":
             flops_data,
             flops_per_gpu_hour=args.flops_per_gpu_hour,
             num_gpus=args.num_gpus,
+            gpu_name=args.gpu_name,
             log_scale=not args.no_log_scale,
             bins=30,
             edgecolor="black",
@@ -397,7 +415,11 @@ if __name__ == "__main__":
         else:
             plt.show()
 
-    results = get_metrics_from_neps_reports(args.neps_configs_dir, num_gpus=args.num_gpus)
+    results = get_metrics_from_neps_reports(
+        args.neps_configs_dir,
+        num_gpus=args.num_gpus,
+        gpu_name=args.gpu_name
+    )
 
     if args.out_mfu_distribution:
         fig, ax = plt.subplots(figsize=(10, 6))
