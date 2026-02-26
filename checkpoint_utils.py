@@ -4,6 +4,51 @@ import json
 import torch
 import yaml
 import utils
+from typing import Optional, Set
+
+
+def get_checkpoint_save_steps(
+    n_tokens: int,
+    steps_budget: int,
+    tokens_per_step: int,
+    max_tokens_budget: Optional[int] = None,
+) -> Optional[Set[int]]:
+  """
+  Compute step numbers at which to save checkpoints.
+
+  When max_tokens_budget is set (e.g. 5B for the search space):
+  - Save every 10% of max_tokens_budget (e.g. every 500M tokens) up to this config's n_tokens.
+  - Always save at the final step (steps_budget).
+  - If this config's budget is small and yields fewer than 2 save points, save at 50% and 100% of steps.
+
+  When max_tokens_budget is None, returns None; caller should use save_every_steps instead.
+
+  Returns:
+    Set of step indices at which to save, or None to use legacy save_every_steps.
+  """
+  if max_tokens_budget is None or max_tokens_budget <= 0 or tokens_per_step <= 0:
+    return None
+
+  save_interval_tokens = max(1, int(0.1 * max_tokens_budget))
+  milestones_tokens = [save_interval_tokens * k for k in range(1, 11)]
+  milestones_tokens = [t for t in milestones_tokens if t <= n_tokens]
+  if not milestones_tokens:
+    milestones_tokens = [n_tokens]
+
+  save_steps = set()
+  for t in milestones_tokens:
+    step = min(int(round(t / tokens_per_step)), steps_budget)
+    if step > 0:
+      save_steps.add(step)
+  save_steps.add(steps_budget)
+
+  if len(save_steps) < 2:
+    save_steps = {steps_budget // 2, steps_budget}
+    if steps_budget // 2 <= 0:
+      save_steps.discard(0)
+      save_steps.add(1)
+
+  return save_steps
 
 
 def _latest_checkpoint(ckpt_dir: str, prefix: str = 'checkpoint_') -> str | None:

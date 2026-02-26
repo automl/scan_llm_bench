@@ -16,13 +16,14 @@ import utils
 from utils import print_master
 from torch_utils import pytorch_setup, destroy_ddp
 from data import get_dataloaders
-from checkpoint_utils import save_checkpoint, maybe_load_checkpoint, update_config_yaml_for_resume
+from checkpoint_utils import save_checkpoint, maybe_load_checkpoint, update_config_yaml_for_resume, get_checkpoint_save_steps
 from models import construct_model
 from models.params_flops import format_flops
 from engine import TorchEngine
 from scripts.probe_batch_size import (
     get_batch_config,
-    get_target_global_batch_for_tokens
+    get_target_global_batch_for_tokens,
+    get_recommended_num_gpus,
 )
 import math
 
@@ -74,7 +75,10 @@ def main(_):
     )
 
     # Probe batch size: find max micro_batch_size that fits, then set grad_accum from model size.
-    if torch.cuda.is_available():
+    # This is mainly intended for standalone runs. When configs are preprocessed
+    # (e.g. by a resource-planning script) with fixed micro_batch_size and
+    # grad_accumulation_steps, set cfg.auto_batch_size = False to skip probing.
+    if getattr(cfg, "auto_batch_size", False) and torch.cuda.is_available():
         model_on_device = model.to(device)
         micro_bs, _ = get_batch_config(
             cfg, model_on_device, device, world_size)
@@ -88,11 +92,15 @@ def main(_):
             1, (target_global + micro_bs * world_size -
                 1) // (micro_bs * world_size)
         )
+        recommended_gpus = get_recommended_num_gpus(target_global, micro_bs)
+        if world_size >= recommended_gpus:
+            grad_accum = 1
         cfg = cfg._replace(micro_batch_size=micro_bs,
                            grad_accumulation_steps=grad_accum)
         print_master(
             f'Probe batch size: micro_batch_size={micro_bs}, grad_accumulation_steps={grad_accum} '
-            f'(Token Budget={cfg.n_tokens:,}, target global batch={target_global})'
+            f'(Token Budget={cfg.n_tokens:,}, target global batch={target_global}, '
+            f'recommended GPUs={recommended_gpus}, using {world_size})'
         )
         # Clear GPU state after probe so training (DDP, torch.compile, optimizer) starts
         # with a clean allocation pattern and avoids fragmentation OOMs.
@@ -100,7 +108,7 @@ def main(_):
         torch.cuda.empty_cache()
     else:
         print_master(
-            'CUDA not available; using config micro_batch_size and grad_accumulation_steps.')
+            'Using config micro_batch_size and grad_accumulation_steps (no auto batch-size probing).')
 
     # Dataset (uses the potentially updated micro_batch_size)
     trainloader, validloader = get_dataloaders(cfg)
@@ -108,6 +116,13 @@ def main(_):
     global_batch = cfg.micro_batch_size * cfg.grad_accumulation_steps * world_size
     steps_budget = max(1, cfg.n_tokens // (cfg.seq_len * global_batch))
     cfg = cfg._replace(steps_budget=steps_budget)
+    tokens_per_step = cfg.seq_len * global_batch
+    save_steps_set = get_checkpoint_save_steps(
+        n_tokens=cfg.n_tokens,
+        steps_budget=steps_budget,
+        tokens_per_step=tokens_per_step,
+        max_tokens_budget=getattr(cfg, "max_tokens_budget", None),
+    )
     # Engine (handles DDP wrapping, torch.compile, optimizer, scheduler)
     engine = TorchEngine(model, cfg, device, local_rank, ckpt)
 
@@ -154,8 +169,13 @@ def main(_):
             train_loss_array = []
 
         # Checkpoint
-        if master_process and cfg.save_intermediate_checkpoints and step % cfg.save_every_steps == 0 and is_step:
-            save_checkpoint(step, model, engine, cfg, metrics)
+        if master_process and cfg.save_intermediate_checkpoints and is_step:
+            if save_steps_set is not None:
+                do_save = step in save_steps_set
+            else:
+                do_save = step % cfg.save_every_steps == 0
+            if do_save:
+                save_checkpoint(step, model, engine, cfg, metrics)
 
     # End of training: log and save checkpoint
     print_master('=== Training Completed! ===')
@@ -192,6 +212,10 @@ def main(_):
                     'time_duration_seconds': training_duration,
                     'final_step': step,
                     'steps_budget': steps_budget,
+                    'recommended_num_gpus': get_recommended_num_gpus(
+                        get_target_global_batch_for_tokens(cfg.n_tokens),
+                        cfg.micro_batch_size,
+                    ),
                 }
             }
 

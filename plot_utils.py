@@ -11,7 +11,7 @@ from typing import List, Optional
 
 import yaml
 from utils import dict_to_config
-from models.params_flops import total_training_flops, format_flops
+from models.params_flops import total_training_flops, format_flops, flops_from_config
 import neps
 
 
@@ -28,6 +28,17 @@ GPU_PROFILES = {
 
 DEFAULT_GPU = "L40"
 EXPECTED_MFU = 0.32
+
+def format_params(n: int) -> str:
+    """Format parameter count for display (e.g. 12_345_678 -> '12.3M')."""
+    if n >= 1e9:
+        return f"{n / 1e9:.2f}B"
+    if n >= 1e6:
+        return f"{n / 1e6:.2f}M"
+    if n >= 1e3:
+        return f"{n / 1e3:.2f}K"
+    return f"{n:_}"
+
 
 def get_flops_per_gpu_hour(gpu_name: str) -> float:
     """Returns peak FLOPs per hour for a specific GPU type."""
@@ -110,6 +121,39 @@ def get_flops_from_neps_configs(
             flops = _compute_flops_from_config(cfg)
             if flops is not None:
                 results.append((config_dir.name, flops))
+        except Exception:
+            continue
+    return results
+
+
+def get_params_from_neps_configs(
+    neps_configs_dir: str | Path,
+    config_yaml_name: str = "config.yaml",
+) -> list[tuple[str, int]]:
+    """
+    Load all configs from a NePS configs directory and compute total parameter count for each.
+
+    Uses the same formula as params_flops.tot_params.
+    Configs that fail to load are skipped.
+
+    Returns:
+        List of (config_id, total_params) e.g. ("config_1", 12_345_678).
+    """
+    root = Path(neps_configs_dir)
+    if not root.is_dir():
+        raise NotADirectoryError(f"Not a directory: {root}")
+
+    results = []
+    for config_dir in sorted(root.iterdir()):
+        if not config_dir.is_dir() or not config_dir.name.startswith("config_"):
+            continue
+        config_path = config_dir / config_yaml_name
+        if not config_path.is_file():
+            continue
+        try:
+            cfg = _load_config_from_path(config_path)
+            info = flops_from_config(cfg, n_tokens=None)
+            results.append((config_dir.name, info["total_params"]))
         except Exception:
             continue
     return results
@@ -328,7 +372,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--neps_configs_dir",
-        default="neps/neps_configs/Possible_1k_Neps_Scale_Search_Space/configs",
+        default="neps/neps_configs/Neps_Scale_Search_Space/configs",
         type=str,
         help="Path to NePS configs directory (e.g. neps/neps_configs/MyExp/configs)",
     )
@@ -340,7 +384,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--out-gpu-hours",
-        default="plots/h200/test1.png",
+        default="plots/h200/gpu_hours.png",
         type=str,
         help="Save FLOPs per GPU hour figure to this path",
     )
@@ -384,6 +428,12 @@ if __name__ == "__main__":
         exit(1)
     print(f"Loaded {len(flops_data)} configs.")
     print(f"FLOPs range: {format_flops(min(f for _, f in flops_data))} .. {format_flops(max(f for _, f in flops_data))}")
+
+    params_data = get_params_from_neps_configs(args.neps_configs_dir)
+    if params_data:
+        min_params = min(p for _, p in params_data)
+        max_params = max(p for _, p in params_data)
+        print(f"Parameter count range: {format_params(min_params)} .. {format_params(max_params)} (min {min_params:,} / max {max_params:,} total params)")
 
 
     if args.out_dist or not (args.out_dist or args.out_gpu_hours):

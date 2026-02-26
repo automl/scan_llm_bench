@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
+import yaml
 
 
 @dataclass
@@ -414,6 +415,109 @@ fi
         return _write_script(path, script)
 
 
+    def build_train_array_grouped(
+        self,
+        neps_root_dir: str,
+        start_config: int = 1,
+        end_config: int = 50,
+        max_concurrent: int | None = None,
+        save_neps_report: bool = True,
+        job_name_prefix: str | None = None,
+        default_gpus: int | None = None,
+        save_to_dir: Path | None = None,
+    ) -> dict[int, Path]:
+        """
+        Group configs by recommended_num_gpus and generate one SLURM array script
+        per GPU count.
+
+        Assumes scripts/prepare_config_resources.py has been run so that each
+        config_*/config.yaml contains recommended_num_gpus.
+        """
+        root = Path(neps_root_dir) / "configs"
+        if not root.is_dir():
+            raise NotADirectoryError(f"Not a directory: {root}")
+
+        groups: dict[int, list[int]] = {}
+        for config_dir in sorted(root.iterdir()):
+            if not config_dir.is_dir() or not config_dir.name.startswith("config_"):
+                continue
+            try:
+                num = int(config_dir.name.replace("config_", ""))
+            except ValueError:
+                continue
+            if num < start_config or num > end_config:
+                continue
+            cfg_path = config_dir / "config.yaml"
+            if not cfg_path.is_file():
+                continue
+            try:
+                with cfg_path.open("r") as f:
+                    cfg_dict = yaml.safe_load(f)
+                g = cfg_dict.get("recommended_num_gpus") or cfg_dict.get("num_gpus")
+                if g is None:
+                    g = default_gpus or self.gpus
+                g = int(g)
+            except Exception:
+                g = default_gpus or self.gpus
+            groups.setdefault(g, []).append(num)
+
+        scripts: dict[int, Path] = {}
+        out_dir = save_to_dir or self.output_dir
+        out_dir = out_dir.resolve()
+
+        for g, config_nums in groups.items():
+            if not config_nums:
+                continue
+            config_nums = sorted(config_nums)
+            array_body = ",".join(str(n) for n in config_nums)
+            if max_concurrent:
+                array_spec = f"{array_body}%{max_concurrent}"
+            else:
+                array_spec = array_body
+
+            name = job_name_prefix or f"Array_Train_{Path(neps_root_dir).name}_{g}g"
+            header = self._sbatch_header(
+                job_name=name,
+                gpus=g,
+                log_subdir="from_neps_configs",
+                array_range=array_spec,
+            )
+            preamble = self._preamble(log_subdir="from_neps_configs")
+            report_flag = "--save_neps_report" if save_neps_report else ""
+
+            train_cmd = self._run_cmd(
+                "train.py",
+                f'--config="$CONFIG_FILE" '
+                f'--job_cluster="$SLURM_JOB_ID" '
+                f'--config_number="${{SLURM_ARRAY_TASK_ID}}" '
+                f'--neps_root_dir="{neps_root_dir}" '
+                f'{report_flag}',
+                gpus=g,
+            )
+
+            script = f"""#!/bin/bash
+{header}
+
+{preamble}
+CONFIGS_DIR="{neps_root_dir}/configs"
+CONFIG_DIR="${{CONFIGS_DIR}}/config_${{SLURM_ARRAY_TASK_ID}}"
+CONFIG_FILE="${{CONFIG_DIR}}/config.yaml"
+
+echo "Grouped array task ${{SLURM_ARRAY_TASK_ID}} on {g} GPU(s)"
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "ERROR: No config at $CONFIG_FILE"
+    exit 1
+fi
+
+{train_cmd}
+"""
+            path = out_dir / f"run_train_array_{g}g.sh"
+            scripts[g] = _write_script(path, script)
+
+        return scripts
+
+
     # 5. Validate configs sequentially
     def build_validation_sequential(
         self,
@@ -649,7 +753,55 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         return _write_script(path, script)
 
 
-    # 10. Generate ALL scripts for a full pipeline
+    # 10. Prepare resources (batch size, grad_accum, GPUs) for NePS configs
+    def build_prepare_resources(
+        self,
+        neps_root_dir: str,
+        max_tokens_budget: int | None = None,
+        max_gpus_cap: int | None = None,
+        job_name: str | None = None,
+        time_hours: int | None = None,
+        save_to: Path | None = None,
+    ) -> Path:
+        """
+        Generate a script that runs scripts/prepare_config_resources.py over all
+        config_*/config.yaml under neps_root_dir/configs.
+
+        This precomputes micro_batch_size, grad_accumulation_steps, and
+        recommended_num_gpus so that train.py can run without probing.
+        """
+        name = job_name or f"Prepare_Resources_{Path(neps_root_dir).name}"
+        t = time_hours or 4
+        header = self._sbatch_header(
+            job_name=name,
+            gpus=1,
+            mem_gb=self.mem_gb,
+            time_hours=t,
+            log_subdir="prepare_resources",
+        )
+        preamble = self._preamble(log_subdir="prepare_resources")
+
+        cmd_parts = [
+            "python -u scripts/prepare_config_resources.py",
+            f'--neps_configs_dir "{neps_root_dir}/configs"',
+        ]
+        if max_tokens_budget is not None:
+            cmd_parts.append(f"--max-tokens-budget {int(max_tokens_budget)}")
+        if max_gpus_cap is not None:
+            cmd_parts.append(f"--max-gpus-cap {int(max_gpus_cap)}")
+        cmd = " \\\n    ".join(cmd_parts)
+
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+{cmd}
+"""
+        path = save_to or self.output_dir / "prepare_resources.sh"
+        return _write_script(path, script)
+
+
+    # 11. Generate ALL scripts for a full pipeline
     def generate_all(
         self,
         hpo_config: str,
@@ -658,6 +810,8 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         start_config: int = 1,
         end_config: int = 50,
         optimizer: str = "random",
+        max_tokens_budget: int | None = None,
+        max_gpus_cap: int | None = None,
     ) -> dict[str, Path]:
         """
         One-shot: generate every script needed for a full pipeline.
@@ -672,6 +826,11 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
             neps_root_dir=neps_root_dir,
             max_evaluations=max_evaluations,
             optimizer=optimizer,
+        )
+        scripts["prepare_resources"] = self.build_prepare_resources(
+            neps_root_dir=neps_root_dir,
+            max_tokens_budget=max_tokens_budget,
+            max_gpus_cap=max_gpus_cap,
         )
         scripts["train_sequential"] = self.build_train_sequential(
             neps_root_dir=neps_root_dir,
@@ -851,6 +1010,18 @@ def main():
     p_all.add_argument("--optimizer", default="random")
     p_all.add_argument("--start_config", type=int, default=1)
     p_all.add_argument("--end_config", type=int, default=50)
+    p_all.add_argument(
+        "--max_tokens_budget",
+        type=int,
+        default=None,
+        help="Optional: global max token budget for checkpoint scheduling in prepare_resources.",
+    )
+    p_all.add_argument(
+        "--max_gpus_cap",
+        type=int,
+        default=8,
+        help="Upper cap for recommended_num_gpus in prepare_resources.",
+    )
 
     # -- sample --
     p_sample = sub.add_parser("sample", help="Sample NePS configs (hpo_neps.py)")
@@ -858,6 +1029,25 @@ def main():
     p_sample.add_argument("--neps_root_dir", default="neps/neps_configs/Neps_Test")
     p_sample.add_argument("--max_evaluations", type=int, default=50)
     p_sample.add_argument("--optimizer", default="random")
+
+    # -- prepare_resources --
+    p_prep = sub.add_parser(
+        "prepare_resources",
+        help="Precompute micro_batch_size, grad_accumulation_steps, and recommended_num_gpus for NePS configs.",
+    )
+    p_prep.add_argument("--neps_root_dir", required=True)
+    p_prep.add_argument(
+        "--max_tokens_budget",
+        type=int,
+        default=None,
+        help="Optional: global max token budget for checkpoint scheduling.",
+    )
+    p_prep.add_argument(
+        "--max_gpus_cap",
+        type=int,
+        default=8,
+        help="Upper cap for recommended_num_gpus.",
+    )
 
     # -- train_seq --
     p_tseq = sub.add_parser("train_seq", help="Sequential training over configs")
@@ -878,6 +1068,21 @@ def main():
     p_tarray.add_argument("--end_config", type=int, default=50)
     p_tarray.add_argument("--max_concurrent", type=int, default=None,
                           help="Max simultaneous array tasks (e.g. 10)")
+
+    # -- train_array_grouped --
+    p_tarray_grp = sub.add_parser(
+        "train_array_grouped",
+        help="Grouped SLURM array jobs for training (one array per GPU count).",
+    )
+    p_tarray_grp.add_argument("--neps_root_dir", required=True)
+    p_tarray_grp.add_argument("--start_config", type=int, default=1)
+    p_tarray_grp.add_argument("--end_config", type=int, default=50)
+    p_tarray_grp.add_argument(
+        "--max_concurrent",
+        type=int,
+        default=None,
+        help="Max simultaneous array tasks per group (e.g. 10)",
+    )
 
     # -- valid_seq --
     p_vseq = sub.add_parser("valid_seq", help="Sequential validation over configs")
@@ -940,6 +1145,8 @@ def main():
             start_config=args.start_config,
             end_config=args.end_config,
             optimizer=args.optimizer,
+            max_tokens_budget=args.max_tokens_budget,
+            max_gpus_cap=args.max_gpus_cap,
         )
         print(f"\nGenerated {len(scripts)} scripts in {mgr.output_dir.resolve()}/:")
         for name, path in scripts.items():
@@ -957,6 +1164,31 @@ def main():
             max_evaluations=args.max_evaluations,
             optimizer=args.optimizer,
         )
+    elif args.mode == "prepare_resources":
+        path = mgr.build_prepare_resources(
+            neps_root_dir=args.neps_root_dir,
+            max_tokens_budget=args.max_tokens_budget,
+            max_gpus_cap=args.max_gpus_cap,
+        )
+    elif args.mode == "train_array_grouped":
+        scripts_by_gpus = mgr.build_train_array_grouped(
+            neps_root_dir=args.neps_root_dir,
+            start_config=args.start_config,
+            end_config=args.end_config,
+            max_concurrent=args.max_concurrent,
+        )
+        if not scripts_by_gpus:
+            print("No grouped array scripts were generated.")
+            return
+        print("\nGenerated grouped array scripts:")
+        for g, script_path in sorted(scripts_by_gpus.items()):
+            print(f"  {g} GPU(s): {script_path}")
+        if args.submit:
+            print("\nSubmitting grouped array jobs:")
+            for g, script_path in sorted(scripts_by_gpus.items()):
+                print(f"Submitting script for {g} GPU(s): {script_path}")
+                mgr.submit(script_path)
+        return
     elif args.mode == "train_seq":
         path = mgr.build_train_sequential(
             neps_root_dir=args.neps_root_dir,
@@ -964,10 +1196,24 @@ def main():
             end_config=args.end_config,
         )
     elif args.mode == "train_single":
+        # If the config has been preprocessed by scripts/prepare_config_resources.py,
+        # it will contain a recommended_num_gpus field. Use that for this job,
+        # falling back to the global --gpus value otherwise.
+        single_gpus: int | None = None
+        try:
+            with open(args.config_path, "r") as f:
+                cfg_dict = yaml.safe_load(f)
+            single_gpus = cfg_dict.get("recommended_num_gpus") or cfg_dict.get("num_gpus")
+            if single_gpus is not None:
+                single_gpus = int(single_gpus)
+        except Exception:
+            single_gpus = None
+
         path = mgr.build_train_single(
             config_path=args.config_path,
             config_number=args.config_number,
             neps_root_dir=args.neps_root_dir,
+            gpus=single_gpus,
         )
     elif args.mode == "train_array":
         path = mgr.build_train_array(

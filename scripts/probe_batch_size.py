@@ -31,6 +31,16 @@ def load_config_simple(path: str):
     return Config(**config_dict)
 
 
+def get_recommended_num_gpus(target_global_batch: int, max_micro_batch_size: int) -> int:
+    """
+    Minimum number of GPUs needed to reach target_global_batch without grad accumulation.
+    Use this to assign different #GPUs per model when scheduling jobs.
+    """
+    if max_micro_batch_size <= 0:
+        return 1
+    return max(1, (target_global_batch + max_micro_batch_size - 1) // max_micro_batch_size)
+
+
 def get_target_global_batch_for_tokens(n_tokens: int) -> int:
     """Target global batch size from number of tokens and model param count.
     """
@@ -209,6 +219,10 @@ def get_batch_config(
         1,
         (target_global + max_micro_bs * num_gpus - 1) // (max_micro_bs * num_gpus),
     )
+    # Only use grad_accum when we can't reach target with available GPUs; else 1
+    recommended_gpus = get_recommended_num_gpus(target_global, max_micro_bs)
+    if num_gpus >= recommended_gpus:
+        grad_accum = 1
     _cleanup()
     return (max_micro_bs, grad_accum)
 
