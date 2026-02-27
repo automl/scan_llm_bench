@@ -186,8 +186,8 @@ echo "Running job $SLURM_JOB_NAME (JID $SLURM_JOB_ID) on $SLURM_JOB_PARTITION"
     ) -> Path:
         """Generate a script to sample NePS configs via hpo_neps.py (no training)."""
         name = job_name or f"Sample_Neps_{Path(neps_root_dir).name}"
-        t = time_hours or 1
-        header = self._sbatch_header(job_name=name, gpus=0, mem_gb=4, time_hours=t,
+        t = time_hours or self.time_hours
+        header = self._sbatch_header(job_name=name, gpus=0, mem_gb=self.mem_gb, time_hours=t,
                                      log_subdir="neps_sample")
         preamble = self._preamble(log_subdir="neps_sample")
 
@@ -237,14 +237,14 @@ echo "Finished at $(date)"
 {header}
 
 {preamble}
-NEPS_RESULTS_DIR="{neps_root_dir}"
-CONFIGS_DIR="${{NEPS_RESULTS_DIR}}/configs"
+NEPS_CONFIGS_DIR="{neps_root_dir}"
+CONFIGS_DIR="${{NEPS_CONFIGS_DIR}}/configs"
 START_CONFIG="${{START_CONFIG:-{start_config}}}"
 END_CONFIG="${{END_CONFIG:-{end_config}}}"
 SAVE_NEPS_REPORT="${{SAVE_NEPS_REPORT:-{report_flag}}}"
 
 echo "=============================================="
-echo "NePS results dir: $NEPS_RESULTS_DIR"
+echo "NePS configs dir: $NEPS_CONFIGS_DIR"
 echo "Configs dir:      $CONFIGS_DIR"
 echo "Config range:     ${{START_CONFIG}} to ${{END_CONFIG}}"
 echo "=============================================="
@@ -711,6 +711,48 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         return _write_script(path, script)
 
 
+    def build_estimate_checkpoint_disk(
+        self,
+        neps_root_dir_or_config: str,
+        max_tokens_budget: float | None = None,
+        default_global_batch: int = 256,
+        bytes_per_param: float | None = None,
+        size_per_billion_params_gb: float | None = None,
+        job_name: str | None = None,
+        save_to: Path | None = None,
+    ) -> Path:
+        """
+        Generate a script to run scripts/estimate_checkpoint_disk.py for either a
+        NePS configs directory or a single config.yaml file.
+        """
+        name = job_name or f"Estimate_Checkpoint_Disk_{Path(neps_root_dir_or_config).name}"
+        header = self._sbatch_header(job_name=name, gpus=0, mem_gb=self.mem_gb, time_hours=self.time_hours)
+        preamble = self._preamble()
+
+        cmd_parts = ["python -u scripts/estimate_checkpoint_disk.py"]
+        p = Path(neps_root_dir_or_config)
+        if p.is_file():
+            cmd_parts.append(f'--config_path "{neps_root_dir_or_config}"')
+        else:
+            cmd_parts.append(f'--neps_configs_dir "{neps_root_dir_or_config}/configs"')
+
+        if bytes_per_param is not None:
+            cmd_parts.append(f"--bytes-per-param {float(bytes_per_param)}")
+        if size_per_billion_params_gb is not None:
+            cmd_parts.append(f"--size-per-billion-params-gb {float(size_per_billion_params_gb)}")
+
+        cmd = " \\\n+    ".join(cmd_parts)
+
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+{cmd}
+"""
+        path = save_to or self.output_dir / "estimate_checkpoint_disk.sh"
+        return _write_script(path, script)
+
+
     # 9. Plot
     def build_plot(
         self,
@@ -720,12 +762,14 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         out_dist: str | None = None,
         out_mfu_distribution: str | None = None,
         out_flops_vs_mfu: str | None = None,
+        gpu_name: str | None = None,
+        flops_per_gpu_hour: float | None = None,
         job_name: str | None = None,
         save_to: Path | None = None,
     ) -> Path:
         name = job_name or "plot"
-        header = self._sbatch_header(job_name=name, gpus=0, mem_gb=2,
-                                     time_hours=1)
+        header = self._sbatch_header(job_name=name, gpus=0, mem_gb=self.mem_gb,
+                                     time_hours=self.time_hours)
         preamble = self._preamble()
 
         cmd_parts = [
@@ -741,6 +785,11 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
             cmd_parts.append(f'--out-mfu-distribution "{out_mfu_distribution}"')
         if out_flops_vs_mfu:
             cmd_parts.append(f'--out-flops-vs-mfu "{out_flops_vs_mfu}"')
+        if gpu_name:
+            cmd_parts.append(f'--gpu-name "{gpu_name}"')
+        if flops_per_gpu_hour is not None:
+            cmd_parts.append(f'--flops-per-gpu-hour {float(flops_per_gpu_hour)}')
+            
         cmd = " \\\n    ".join(cmd_parts)
 
         script = f"""#!/bin/bash
@@ -757,7 +806,6 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
     def build_prepare_resources(
         self,
         neps_root_dir: str,
-        max_tokens_budget: int | None = None,
         max_gpus_cap: int | None = None,
         job_name: str | None = None,
         time_hours: int | None = None,
@@ -771,7 +819,7 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         recommended_num_gpus so that train.py can run without probing.
         """
         name = job_name or f"Prepare_Resources_{Path(neps_root_dir).name}"
-        t = time_hours or 4
+        t = time_hours or self.time_hours
         header = self._sbatch_header(
             job_name=name,
             gpus=1,
@@ -781,12 +829,13 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         )
         preamble = self._preamble(log_subdir="prepare_resources")
 
-        cmd_parts = [
-            "python -u scripts/prepare_config_resources.py",
-            f'--neps_configs_dir "{neps_root_dir}/configs"',
-        ]
-        if max_tokens_budget is not None:
-            cmd_parts.append(f"--max-tokens-budget {int(max_tokens_budget)}")
+        cmd_parts = ["python -u scripts/prepare_config_resources.py"]
+        # Allow either a NePS configs directory or a single config file path.
+        p = Path(neps_root_dir)
+        if p.is_file():
+            cmd_parts.append(f'--config_path "{neps_root_dir}"')
+        else:
+            cmd_parts.append(f'--neps_configs_dir "{neps_root_dir}"')
         if max_gpus_cap is not None:
             cmd_parts.append(f"--max-gpus-cap {int(max_gpus_cap)}")
         cmd = " \\\n    ".join(cmd_parts)
@@ -810,7 +859,6 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         start_config: int = 1,
         end_config: int = 50,
         optimizer: str = "random",
-        max_tokens_budget: int | None = None,
         max_gpus_cap: int | None = None,
     ) -> dict[str, Path]:
         """
@@ -829,7 +877,6 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         )
         scripts["prepare_resources"] = self.build_prepare_resources(
             neps_root_dir=neps_root_dir,
-            max_tokens_budget=max_tokens_budget,
             max_gpus_cap=max_gpus_cap,
         )
         scripts["train_sequential"] = self.build_train_sequential(
@@ -912,10 +959,15 @@ def main():
             --hpo_config config/neps_configs/hpo_scale_search_space.yaml \\
             --neps_root_dir neps/neps_configs/Neps_Test \\
             --max_evaluations 100
+            
+        # Generate the resource preparation script:
+        python cluster/slurm_manager.py prepare_resources \\
+            --neps_root_dir neps/neps_test_configs/neps_configs_samples/configs \\
+            --max_gpus_cap 8
 
         # Generate a sequential training script:
         python cluster/slurm_manager.py train_seq \\
-            --neps_root_dir /work/.../neps/neps_configs/Neps_Test \\
+            --neps_root_dir /neps/neps_configs/Neps_Test \\
             --start_config 1 --end_config 50
 
         # Generate a single-config training script:
@@ -965,9 +1017,11 @@ def main():
             --neps_root_dir neps/neps_configs/MyExperiment \\
             --max_evaluations 50 --cluster mldlc2
 
-        # Step 2: Sample configs
+        # Step 2: Sample configs & prepare resources
         sbatch cluster/generated/sample_neps_configs.sh
+        sbatch cluster/generated/prepare_resources.sh
 
+        
         # Step 3: Train (pick one approach)
         sbatch cluster/generated/run_neps_configs.sh          # sequential
         sbatch cluster/generated/run_train_array.sh           # array (parallel)
@@ -1011,12 +1065,6 @@ def main():
     p_all.add_argument("--start_config", type=int, default=1)
     p_all.add_argument("--end_config", type=int, default=50)
     p_all.add_argument(
-        "--max_tokens_budget",
-        type=int,
-        default=None,
-        help="Optional: global max token budget for checkpoint scheduling in prepare_resources.",
-    )
-    p_all.add_argument(
         "--max_gpus_cap",
         type=int,
         default=8,
@@ -1033,15 +1081,11 @@ def main():
     # -- prepare_resources --
     p_prep = sub.add_parser(
         "prepare_resources",
-        help="Precompute micro_batch_size, grad_accumulation_steps, and recommended_num_gpus for NePS configs.",
+        help="Precompute micro_batch_size, grad_accumulation_steps, and recommended_num_gpus for NePS configs or a single config.",
     )
-    p_prep.add_argument("--neps_root_dir", required=True)
-    p_prep.add_argument(
-        "--max_tokens_budget",
-        type=int,
-        default=None,
-        help="Optional: global max token budget for checkpoint scheduling.",
-    )
+    group_prep = p_prep.add_mutually_exclusive_group(required=True)
+    group_prep.add_argument("--neps_root_dir", help="Path to NePS root (contains 'configs' subdir)")
+    group_prep.add_argument("--config_path", help="Path to a single config.yaml file")
     p_prep.add_argument(
         "--max_gpus_cap",
         type=int,
@@ -1117,6 +1161,19 @@ def main():
     p_plot.add_argument("--out_dist", default=None)
     p_plot.add_argument("--out_mfu_distribution", default=None)
     p_plot.add_argument("--out_flops_vs_mfu", default=None)
+    p_plot.add_argument("--gpu_name", default=None)
+    p_plot.add_argument("--flops_per_gpu_hour", default=None)
+    
+    # -- estimate_disk --
+    p_est = sub.add_parser(
+        "estimate_disk",
+        help="Estimate checkpoint disk usage for NePS configs or single config",
+    )
+    group_est = p_est.add_mutually_exclusive_group(required=True)
+    group_est.add_argument("--neps_configs_dir", help="Path to NePS root (contains 'configs' subdir)")
+    group_est.add_argument("--config_path", help="Path to a single config.yaml file")
+    p_est.add_argument("--bytes_per_param", type=float, default=None)
+    p_est.add_argument("--size_per_billion_params_gb", type=float, default=None)
 
     args = parser.parse_args()
 
@@ -1165,9 +1222,9 @@ def main():
             optimizer=args.optimizer,
         )
     elif args.mode == "prepare_resources":
+        target = args.neps_root_dir if getattr(args, "neps_root_dir", None) else args.config_path
         path = mgr.build_prepare_resources(
-            neps_root_dir=args.neps_root_dir,
-            max_tokens_budget=args.max_tokens_budget,
+            neps_root_dir=target,
             max_gpus_cap=args.max_gpus_cap,
         )
     elif args.mode == "train_array_grouped":
@@ -1247,6 +1304,13 @@ def main():
             config_path=args.config_path,
             model_size=model_sz,
         )
+    elif args.mode == "estimate_disk":
+        target = args.neps_configs_dir if getattr(args, "neps_configs_dir", None) else args.config_path
+        path = mgr.build_estimate_checkpoint_disk(
+            neps_root_dir_or_config=target,
+            bytes_per_param=args.bytes_per_param,
+            size_per_billion_params_gb=args.size_per_billion_params_gb,
+        )
     elif args.mode == "plot":
         path = mgr.build_plot(
             neps_configs_dir=args.neps_configs_dir,
@@ -1255,6 +1319,8 @@ def main():
             out_dist=args.out_dist,
             out_mfu_distribution=args.out_mfu_distribution,
             out_flops_vs_mfu=args.out_flops_vs_mfu,
+            gpu_name=args.gpu_name,
+            flops_per_gpu_hour=args.flops_per_gpu_hour,
         )
     else:
         parser.error(f"Unknown mode: {args.mode}")

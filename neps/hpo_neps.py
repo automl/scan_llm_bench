@@ -38,6 +38,7 @@ from checkpoint_utils import save_checkpoint
 from data import get_dataloaders
 from engine import TorchEngine
 from models import construct_model
+from models.params_flops import flops_from_config
 from scripts.probe_batch_size import get_target_global_batch_for_tokens
 from torch_utils import destroy_ddp, pytorch_setup
 from utils import print_master
@@ -352,6 +353,21 @@ def create_evaluate_pipeline(base_config: dict, search_space_def: dict):
                 target_global_batch = get_target_global_batch_for_tokens(n_tokens)
                 min_valid_tokens = (seq_len + 1) * target_global_batch
                 full_config['valid_tokens'] = max(valid_from_frac, min_valid_tokens)
+
+            try:
+                metrics_cfg, _ = utils.dict_to_config(full_config)
+                n_tokens_for_flops = getattr(metrics_cfg, 'n_tokens', None)
+                flops_info = flops_from_config(metrics_cfg, n_tokens=n_tokens_for_flops)
+                full_config['total_params'] = flops_info['total_params']
+                total_training_flops = flops_info.get('total_training_flops')
+                if total_training_flops is not None:
+                    full_config['total_flops'] = total_training_flops
+            except Exception as exc:
+                logging.warning(
+                    "Failed to compute total params/flops for %s: %s",
+                    pipeline_directory,
+                    exc,
+                )
 
             config_path = Path(pipeline_directory) / 'config.yaml'
             config_path.parent.mkdir(parents=True, exist_ok=True)

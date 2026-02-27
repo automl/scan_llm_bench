@@ -17,12 +17,25 @@ from plot_utils import get_params_from_neps_configs
 from plot_utils import _load_config_from_path, format_params
 from checkpoint_utils import get_checkpoint_save_steps
 from models.params_flops import flops_from_config
+from scripts.prepare_config_resources import get_max_tokens_from_configs
+
+
+def _tokens_per_step_from_config(cfg) -> int:
+    seq_len = getattr(cfg, "seq_len", 2048)
+    micro_batch = getattr(cfg, "micro_batch_size", None)
+    grad_accum = getattr(cfg, "grad_accumulation_steps", None)
+    global_batch = None
+    if micro_batch is not None and grad_accum is not None:
+        try:
+            global_batch = int(micro_batch) * int(grad_accum)
+        except Exception:
+            global_batch = None
+    return max(1, seq_len * global_batch)
 
 
 def estimate_num_saves_per_config(
     config_path: Path,
     max_tokens_budget: int,
-    default_global_batch: int = 256,
 ) -> int:
     """
     For a single config YAML, compute how many checkpoints would be saved
@@ -32,8 +45,7 @@ def estimate_num_saves_per_config(
     n_tokens = getattr(cfg, "n_tokens", None)
     if n_tokens is None:
         return 0
-    seq_len = getattr(cfg, "seq_len", 2048)
-    tokens_per_step = seq_len * default_global_batch
+    tokens_per_step = _tokens_per_step_from_config(cfg)
     if tokens_per_step <= 0:
         return 0
     steps_budget = max(1, n_tokens // tokens_per_step)
@@ -44,8 +56,9 @@ def estimate_num_saves_per_config(
         max_tokens_budget=max_tokens_budget,
     )
     if save_steps_set is None:
-        # Fallback: assume save every 10% of steps
+        # Fallback: save every 10% of steps
         return max(2, min(11, 1 + steps_budget // max(1, steps_budget // 10)))
+    print(f"Save steps: {len(save_steps_set)} ({save_steps_set}) for config {config_path.name} with n_tokens={n_tokens}, steps_budget={steps_budget}, tokens_per_step={tokens_per_step}")
     return len(save_steps_set)
 
 
@@ -65,18 +78,6 @@ def main():
         help="Path to a single config.yaml file.",
     )
     p.add_argument(
-        "--max-tokens-budget",
-        type=float,
-        default=5e9,
-        help="Max token budget in search space (default 5B). Used for 10%% save intervals.",
-    )
-    p.add_argument(
-        "--default-global-batch",
-        type=int,
-        default=256,
-        help="Assumed global batch size for steps_budget (default 256)",
-    )
-    p.add_argument(
         "--bytes-per-param",
         type=float,
         default=None,
@@ -90,9 +91,7 @@ def main():
     )
     args = p.parse_args()
 
-    max_tokens_budget = int(args.max_tokens_budget)
-
-    # Single config mode
+    today_rows: list[tuple[str, int, int]] = []
     if args.config_path is not None:
         cfg_path = Path(args.config_path)
         if not cfg_path.is_file():
@@ -100,12 +99,14 @@ def main():
 
         cfg = _load_config_from_path(cfg_path)
         info = flops_from_config(cfg, n_tokens=None)
-        n_params = info["total_params"]
+        max_tokens_budget = get_max_tokens_from_configs([cfg_path])
+        n_params = getattr(cfg, "total_params", None)
         n_saves = estimate_num_saves_per_config(
             cfg_path,
             max_tokens_budget=max_tokens_budget,
             default_global_batch=args.default_global_batch,
         )
+        today_rows.append((cfg_path.name, n_params, n_saves))
 
         print("Configs: 1 (single config)")
         print(f"Max tokens budget: {max_tokens_budget / 1e9:.1f}B")
@@ -115,43 +116,60 @@ def main():
         )
         print(f"Checkpoint saves for this config: {n_saves}")
     else:
-        # Directory (NePS) mode
         root = Path(args.neps_configs_dir)
         if not root.is_dir():
             raise NotADirectoryError(f"Not a directory: {root}")
+        config_paths = []
+        for config_dir in sorted(root.iterdir()):
+            if not config_dir.is_dir() or not config_dir.name.startswith("config_"):
+                continue
+            cfg_path = config_dir / "config.yaml"
+            if cfg_path.is_file():
+                config_paths.append(cfg_path)
 
+        if not config_paths:
+            print(f"No config_*/config.yaml files found under {root}")
+            return
         params_data = get_params_from_neps_configs(root)
         if not params_data:
             print("No configs found or all failed to load.")
             return
 
-        # Per-config: config_id, n_params, n_saves
-        rows = []
-        for config_dir in sorted(root.iterdir()):
-            if not config_dir.is_dir() or not config_dir.name.startswith("config_"):
-                continue
-            config_path = config_dir / "config.yaml"
-            if not config_path.is_file():
-                continue
+        print("Found params for configs. Estimating saves...")
+        
+        max_tokens_budget = get_max_tokens_from_configs(config_paths)
+        print(f"Max tokens budget {max_tokens_budget}")
+        
+        for cfg_path in config_paths:
             try:
-                n_params = next((p for cid, p in params_data if cid == config_dir.name), None)
+                n_params = next((p for cid, p in params_data if cid == cfg_path.parent.name), None)
+                print(f"Params for {cfg_path.parent.name}: {n_params}")
                 if n_params is None:
                     continue
+                
                 n_saves = estimate_num_saves_per_config(
-                    config_path,
+                    cfg_path,
                     max_tokens_budget=max_tokens_budget,
-                    default_global_batch=args.default_global_batch,
                 )
-                rows.append((config_dir.name, n_params, n_saves))
-            except Exception:
+                today_rows.append((cfg_path.parent.name, n_params, n_saves))
+            except Exception as e:
+                print(f"Error processing {cfg_path}: {e}")
                 continue
 
-        print(f"Configs: {len(rows)}")
+        if not today_rows:
+            print("No valid configs processed.")
+            return
+
+        print(f"Configs: {len(today_rows)}")
         print(f"Max tokens budget: {max_tokens_budget / 1e9:.1f}B")
-        print(f"Parameter count range: {format_params(min(r[1] for r in rows))} .. {format_params(max(r[1] for r in rows))}")
-        total_saves = sum(r[2] for r in rows)
+        print(
+            f"Parameter count range: {format_params(min(r[1] for r in today_rows))} .. "
+            f"{format_params(max(r[1] for r in today_rows))}"
+        )
+        total_saves = sum(r[2] for r in today_rows)
         print(f"Total checkpoint saves (all configs): {total_saves}")
 
+    rows = today_rows
     if args.size_per_billion_params_gb is not None:
         # 2 GB per 1B params -> 2 bytes/param
         bytes_per_param = args.size_per_billion_params_gb * (1024**3) / 1e9

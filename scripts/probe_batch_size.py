@@ -224,7 +224,7 @@ def get_batch_config(
     if num_gpus >= recommended_gpus:
         grad_accum = 1
     _cleanup()
-    return (max_micro_bs, grad_accum)
+    return (max_micro_bs, grad_accum, recommended_gpus)
 
 
 def print_vram(prefix: str = ""):

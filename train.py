@@ -148,6 +148,7 @@ def main(_):
     train_loss_array = []
     training_start_time = time.time()
     last_train_loss = None
+    last_completed_step = step_start  # tracks the last step we actually trained on
 
     # Training
     for micro_step, micro_batch in enumerate(trainloader, micro_step_start + 1):
@@ -161,6 +162,8 @@ def main(_):
         last_train_loss = train_loss.item() if hasattr(
             train_loss, 'item') else float(train_loss)
         train_loss_array.append(train_loss)
+        if is_step:
+            last_completed_step = step
 
         # Log
         if master_process and step % cfg.log_every_steps == 0 and is_step:
@@ -180,10 +183,10 @@ def main(_):
     # End of training: log and save checkpoint
     print_master('=== Training Completed! ===')
     if master_process and cfg.save_last_checkpoint:
-        save_checkpoint(step, model, engine, cfg, metrics)
+        save_checkpoint(last_completed_step, model, engine, cfg, metrics)
         # Make config YAML ready for validation run
         try:
-            update_config_yaml_for_resume(CFG_PATH, step, cfg)
+            update_config_yaml_for_resume(CFG_PATH, last_completed_step, cfg)
         except Exception as e:
             print_master(f'Could not update config for resume: {e}')
 
@@ -210,7 +213,7 @@ def main(_):
                     'micro_batch_size': cfg.micro_batch_size,
                     'global_batch_size': global_batch,
                     'time_duration_seconds': training_duration,
-                    'final_step': step,
+                    'final_step': last_completed_step,
                     'steps_budget': steps_budget,
                     'recommended_num_gpus': get_recommended_num_gpus(
                         get_target_global_batch_for_tokens(cfg.n_tokens),

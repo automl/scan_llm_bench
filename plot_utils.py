@@ -118,9 +118,9 @@ def get_flops_from_neps_configs(
             continue
         try:
             cfg = _load_config_from_path(config_path)
-            flops = _compute_flops_from_config(cfg)
-            if flops is not None:
-                results.append((config_dir.name, flops))
+            total_flops = getattr(cfg, "total_flops", None)
+            if total_flops is not None:
+                results.append((config_dir.name, total_flops))
         except Exception:
             continue
     return results
@@ -152,8 +152,51 @@ def get_params_from_neps_configs(
             continue
         try:
             cfg = _load_config_from_path(config_path)
-            info = flops_from_config(cfg, n_tokens=None)
-            results.append((config_dir.name, info["total_params"]))
+            total_params = getattr(cfg, "total_params", None)
+            if total_params is not None:
+                results.append((config_dir.name, total_params))
+        except Exception:
+            continue
+    return results
+
+
+def get_tokens_from_neps_configs(
+    neps_configs_dir: str | Path,
+    config_yaml_name: str = "config.yaml",
+) -> list[tuple[str, int]]:
+    """
+    Scan NePS configs and extract the `n_tokens` budget from each.
+
+    Similar to the other helper functions, this walks through
+    `<neps_configs_dir>/config_*/config.yaml`, loads each config, and
+    returns the value of ``cfg.n_tokens`` when present. Any configs that
+    fail to load or that lack the field are skipped.
+
+    Args:
+        neps_configs_dir: Directory containing the individually numbered
+            config folders.
+        config_yaml_name: Filename inside each config folder (default
+            ``config.yaml``).
+
+    Returns:
+        A list of tuples ``(config_id, n_tokens)``.
+    """
+    root = Path(neps_configs_dir)
+    if not root.is_dir():
+        raise NotADirectoryError(f"Not a directory: {root}")
+
+    results: list[tuple[str, int]] = []
+    for config_dir in sorted(root.iterdir()):
+        if not config_dir.is_dir() or not config_dir.name.startswith("config_"):
+            continue
+        config_path = config_dir / config_yaml_name
+        if not config_path.is_file():
+            continue
+        try:
+            cfg = _load_config_from_path(config_path)
+            n_tokens = getattr(cfg, "n_tokens", None)
+            if n_tokens is not None:
+                results.append((config_dir.name, n_tokens))
         except Exception:
             continue
     return results
@@ -372,7 +415,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--neps_configs_dir",
-        default="neps/neps_configs/Neps_Scale_Search_Space/configs",
+        default="neps/neps_configs/Possible_1k_Neps_Full_Scale_Search_Space/configs",
         type=str,
         help="Path to NePS configs directory (e.g. neps/neps_configs/MyExp/configs)",
     )
@@ -434,6 +477,12 @@ if __name__ == "__main__":
         min_params = min(p for _, p in params_data)
         max_params = max(p for _, p in params_data)
         print(f"Parameter count range: {format_params(min_params)} .. {format_params(max_params)} (min {min_params:,} / max {max_params:,} total params)")
+
+    tokens_data = get_tokens_from_neps_configs(args.neps_configs_dir)
+    if tokens_data:
+        min_tokens = min(t for _, t in tokens_data)
+        max_tokens = max(t for _, t in tokens_data)
+        print(f"Token budget range: {min_tokens:,} .. {max_tokens:,} tokens")
 
 
     if args.out_dist or not (args.out_dist or args.out_gpu_hours):

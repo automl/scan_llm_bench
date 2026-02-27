@@ -19,18 +19,34 @@ Run this once before submitting training jobs so that Slurm scripts
 can allocate the right number of GPUs per config.
 """
 
-from pathlib import Path
 import argparse
-import yaml
-import torch
+from pathlib import Path
+from typing import List, Optional
 
+import torch
+import yaml
 from models import construct_model
 from scripts.probe_batch_size import (
-    load_config_simple,
     get_batch_config,
-    get_target_global_batch_for_tokens,
     get_recommended_num_gpus,
+    get_target_global_batch_for_tokens,
+    load_config_simple,
 )
+
+
+def get_max_tokens_from_configs(config_paths: List[Path]) -> int:
+    """Iterate over all configs and return the maximum n_tokens found."""
+    max_tokens = 0
+    for path in config_paths:
+        try:
+            with path.open("r") as f:
+                cfg = yaml.safe_load(f)
+                n_tokens = cfg.get("n_tokens", 0)
+                if n_tokens > max_tokens:
+                    max_tokens = n_tokens
+        except Exception as e:
+            print(f"Warning: Could not read n_tokens from {path}: {e}")
+    return int(max_tokens)
 
 
 def prepare_single_config(
@@ -52,18 +68,20 @@ def prepare_single_config(
     model = model.to(device)
 
     # Probe on a single GPU: this finds the largest micro_batch_size that fits.
-    micro_bs, grad_accum = get_batch_config(
+    micro_bs, grad_accum, recommended_gpus = get_batch_config(
         cfg,
         model,
         device=device,
-        num_gpus=1,
+        num_gpus=max_gpus_cap,
     )
 
     target_global = get_target_global_batch_for_tokens(cfg.n_tokens)
-    recommended_gpus = get_recommended_num_gpus(target_global, micro_bs)
+    
+    print("Initial recommended_num_gpus based on target_global_batch and micro_batch_size:", recommended_gpus)
     if max_gpus_cap is not None and max_gpus_cap > 0:
         recommended_gpus = max(1, min(recommended_gpus, max_gpus_cap))
-
+        print(f"Recommended_num_gpus after applying max_gpus_cap of {max_gpus_cap}:", recommended_gpus)
+    
     with config_path.open("r") as f:
         config_dict = yaml.safe_load(f)
 
@@ -74,7 +92,7 @@ def prepare_single_config(
     config_dict["auto_batch_size"] = False
 
     if max_tokens_budget is not None and max_tokens_budget > 0:
-        config_dict.setdefault("max_tokens_budget", int(max_tokens_budget))
+        config_dict["max_tokens_budget"] = int(max_tokens_budget)
 
     with config_path.open("w") as f:
         yaml.safe_dump(config_dict, f, default_flow_style=False, sort_keys=False)
@@ -82,7 +100,8 @@ def prepare_single_config(
     print(
         f"[{config_path}] micro_batch_size={micro_bs}, "
         f"grad_accumulation_steps={grad_accum}, "
-        f"recommended_num_gpus={recommended_gpus}"
+        f"recommended_num_gpus={recommended_gpus}, "
+        f"target_global_batch={target_global}"
     )
 
 
@@ -108,12 +127,6 @@ def main() -> None:
         help="Device to use for probing (default: cuda if available, else error).",
     )
     p.add_argument(
-        "--max-tokens-budget",
-        type=float,
-        default=None,
-        help="Optional global max token budget (e.g. 5e9) used for checkpoint scheduling.",
-    )
-    p.add_argument(
         "--max-gpus-cap",
         type=int,
         default=8,
@@ -131,13 +144,13 @@ def main() -> None:
             )
         device = "cuda"
 
-    max_tokens_budget = int(args.max_tokens_budget) if args.max_tokens_budget is not None else None
-
-    # Single config mode
     if args.config_path is not None:
         cfg_path = Path(args.config_path)
         if not cfg_path.is_file():
             raise FileNotFoundError(f"Config file not found: {cfg_path}")
+        
+        max_tokens_budget = get_max_tokens_from_configs([cfg_path])
+
         prepare_single_config(
             cfg_path,
             device=device,
@@ -162,6 +175,10 @@ def main() -> None:
     if not config_paths:
         print(f"No config_*/config.yaml files found under {root}")
         return
+
+    max_tokens_budget = get_max_tokens_from_configs(config_paths)
+    if max_tokens_budget > 0:
+        print(f"Auto-detected max_tokens_budget={max_tokens_budget} across {len(config_paths)} configs")
 
     print(f"Found {len(config_paths)} configs under {root}")
     for cfg_path in config_paths:
