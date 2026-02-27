@@ -456,16 +456,12 @@ if __name__ == "__main__":
         default=None,
         help=f"FLOPs per GPU-hour (default: L40)",
     )
-    parser.add_argument(
-        "--num-gpus",
-        type=int,
-        default=8,
-        help="Number of GPUs to use",
-    )
     parser.add_argument("--no-log-scale", action="store_true", help="Use linear scale")
     args = parser.parse_args()
     import matplotlib.pyplot as plt
     flops_data = get_flops_from_neps_configs(args.neps_configs_dir)
+    # Always plot the hours for single-gpu hours since we will use variable gpu's depending on the config needs
+    num_gpus = 1
     if not flops_data:
         print("No configs with valid FLOPs found.")
         exit(1)
@@ -501,7 +497,7 @@ if __name__ == "__main__":
         plot_flops_per_gpu_hour(
             flops_data,
             flops_per_gpu_hour=args.flops_per_gpu_hour,
-            num_gpus=args.num_gpus,
+            num_gpus=num_gpus,
             gpu_name=args.gpu_name,
             log_scale=not args.no_log_scale,
             bins=30,
@@ -516,7 +512,7 @@ if __name__ == "__main__":
 
     results = get_metrics_from_neps_reports(
         args.neps_configs_dir,
-        num_gpus=args.num_gpus,
+        num_gpus=num_gpus,
         gpu_name=args.gpu_name
     )
 

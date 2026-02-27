@@ -4,8 +4,9 @@ __pycache__/
 logs/
 data/data/
 neps_results/
-neps_configs/*.lock 
-neps_configs/*summary*
+neps_configs/
+neps_test_configs/
+checkpoints/
 # Ignore Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 

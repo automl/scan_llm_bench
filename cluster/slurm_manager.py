@@ -757,7 +757,6 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
     def build_plot(
         self,
         neps_configs_dir: str,
-        num_gpus: int = 1,
         out_gpu_hours: str | None = None,
         out_dist: str | None = None,
         out_mfu_distribution: str | None = None,
@@ -775,7 +774,6 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         cmd_parts = [
             "python plot_utils.py",
             f'--neps_configs_dir "{neps_configs_dir}"',
-            f"--num-gpus {num_gpus}",
         ]
         if out_gpu_hours:
             cmd_parts.append(f'--out-gpu-hours "{out_gpu_hours}"')
@@ -1156,7 +1154,6 @@ def main():
     # -- plot --
     p_plot = sub.add_parser("plot", help="Generate plots")
     p_plot.add_argument("--neps_configs_dir", required=True)
-    p_plot.add_argument("--num_gpus", type=int, default=1)
     p_plot.add_argument("--out_gpu_hours", default=None)
     p_plot.add_argument("--out_dist", default=None)
     p_plot.add_argument("--out_mfu_distribution", default=None)
@@ -1314,7 +1311,6 @@ def main():
     elif args.mode == "plot":
         path = mgr.build_plot(
             neps_configs_dir=args.neps_configs_dir,
-            num_gpus=args.num_gpus,
             out_gpu_hours=args.out_gpu_hours,
             out_dist=args.out_dist,
             out_mfu_distribution=args.out_mfu_distribution,
