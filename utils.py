@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+
 import yaml
 import math
 import shutil
@@ -255,3 +257,23 @@ def print_master(msg):
     master_process = (not ddp) or (int(rank) == 0)
     if master_process:
         print(msg)
+
+
+def get_config_paths(neps_configs_dir):
+    root = Path(neps_configs_dir)
+    if not root.is_dir():
+        raise NotADirectoryError(f"Not a directory: {root}")
+
+    config_paths = []
+    for config_dir in sorted(root.iterdir()):
+        if not config_dir.is_dir() or not config_dir.name.startswith("config_"):
+            continue
+        cfg_path = config_dir / "config.yaml"
+        if cfg_path.is_file():
+            config_paths.append(cfg_path)
+
+    if not config_paths:
+        print(f"No config_*/config.yaml files found under {root}")
+        return None
+
+    return config_paths

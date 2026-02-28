@@ -13,10 +13,11 @@ Usage:
 import argparse
 from pathlib import Path
 
-from plot_utils import get_params_from_neps_configs
-from plot_utils import _load_config_from_path, format_params
+from scripts.plot_utils import get_params_from_neps_configs
+from scripts.plot_utils import _load_config_from_path, format_params
 from checkpoint_utils import get_checkpoint_save_steps
 from models.params_flops import flops_from_config
+from utils import get_config_paths
 from scripts.prepare_config_resources import get_max_tokens_from_configs
 
 
@@ -24,10 +25,11 @@ def _tokens_per_step_from_config(cfg) -> int:
     seq_len = getattr(cfg, "seq_len", 2048)
     micro_batch = getattr(cfg, "micro_batch_size", None)
     grad_accum = getattr(cfg, "grad_accumulation_steps", None)
+    recommended_num_gpus = getattr(cfg, "recommended_num_gpus", None)
     global_batch = None
     if micro_batch is not None and grad_accum is not None:
         try:
-            global_batch = int(micro_batch) * int(grad_accum)
+            global_batch = int(micro_batch) * int(grad_accum) * int(recommended_num_gpus)
         except Exception:
             global_batch = None
     return max(1, seq_len * global_batch)
@@ -98,13 +100,11 @@ def main():
             raise FileNotFoundError(f"Config file not found: {cfg_path}")
 
         cfg = _load_config_from_path(cfg_path)
-        info = flops_from_config(cfg, n_tokens=None)
         max_tokens_budget = get_max_tokens_from_configs([cfg_path])
         n_params = getattr(cfg, "total_params", None)
         n_saves = estimate_num_saves_per_config(
             cfg_path,
-            max_tokens_budget=max_tokens_budget,
-            default_global_batch=args.default_global_batch,
+            max_tokens_budget=max_tokens_budget
         )
         today_rows.append((cfg_path.name, n_params, n_saves))
 
@@ -116,21 +116,10 @@ def main():
         )
         print(f"Checkpoint saves for this config: {n_saves}")
     else:
-        root = Path(args.neps_configs_dir)
-        if not root.is_dir():
-            raise NotADirectoryError(f"Not a directory: {root}")
-        config_paths = []
-        for config_dir in sorted(root.iterdir()):
-            if not config_dir.is_dir() or not config_dir.name.startswith("config_"):
-                continue
-            cfg_path = config_dir / "config.yaml"
-            if cfg_path.is_file():
-                config_paths.append(cfg_path)
-
-        if not config_paths:
-            print(f"No config_*/config.yaml files found under {root}")
-            return
-        params_data = get_params_from_neps_configs(root)
+        config_paths = get_config_paths(args.neps_configs_dir)
+        if config_paths is None:
+            raise Exception("No configs found.")
+        params_data = get_params_from_neps_configs(Path(args.neps_configs_dir))
         if not params_data:
             print("No configs found or all failed to load.")
             return

@@ -1,4 +1,5 @@
 """Pretrain a Transformer on language modeling."""
+from os.path import join
 
 from absl import app, flags
 from collections import defaultdict
@@ -80,7 +81,7 @@ def main(_):
     # grad_accumulation_steps, set cfg.auto_batch_size = False to skip probing.
     if getattr(cfg, "auto_batch_size", False) and torch.cuda.is_available():
         model_on_device = model.to(device)
-        micro_bs, _ = get_batch_config(
+        micro_bs, _, _ = get_batch_config(
             cfg, model_on_device, device, world_size)
         if dist.is_initialized():
             micro_bs_t = torch.tensor(
@@ -190,6 +191,12 @@ def main(_):
         except Exception as e:
             print_master(f'Could not update config for resume: {e}')
 
+    try:
+        metrics_file_path = utils.get_exp_dir_path(cfg).join("metrics.json")
+        with open(metrics_file_path, 'r') as f:
+            metrics = json.load(f)
+    except Exception as e:
+        print("Couldn't read metrics file: {}".format(e))
     # Save NePS report if requested
     if master_process and FLAGS.save_neps_report:
         neps_dir = FLAGS.neps_report_dir or FLAGS.neps_root_dir
@@ -207,6 +214,8 @@ def main(_):
                     'duration': training_duration,
                     'compute_formatted': format_flops(compute_flops) if compute_flops else None,
                     'train_loss': last_train_loss,
+                    'train_loss_array': metrics['train/loss'] if metrics['train/loss'] else None,
+                    'lr': metrics['lr'] if metrics['lr'] else None,
                     'n_data': n_data,
                     'n_param': n_params,
                     'flops': compute_flops,

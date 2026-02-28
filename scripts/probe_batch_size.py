@@ -183,7 +183,7 @@ def get_batch_config(
     probe_sizes: list[int] | None = None,
     max_bs: int = 2048,
     max_memory_fraction: float = 0.88,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """
     Probe max micro_batch_size and compute grad_accumulation_steps from model size.
 
@@ -224,7 +224,7 @@ def get_batch_config(
     if num_gpus >= recommended_gpus:
         grad_accum = 1
     _cleanup()
-    return (max_micro_bs, grad_accum, recommended_gpus)
+    return max_micro_bs, grad_accum, recommended_gpus
 
 
 def print_vram(prefix: str = ""):

@@ -5,15 +5,14 @@ recommended_num_gpus before launching training.
 - Builds the model
 - Uses the existing probe logic (scripts.probe_batch_size.get_batch_config)
   on a single GPU to find:
-    * max micro_batch_size that fits
+    * max micro_batch_size that fits on the given amount of gpus
     * grad_accumulation_steps to hit a target global batch
-- Derives recommended_num_gpus from target_global_batch and max_micro_batch_size
+- Derives recommended_num_gpus from target_global_batch, max_micro_batch_size and max_gpus_cap
 - Writes these values back into the YAML:
     micro_batch_size
     grad_accumulation_steps
     recommended_num_gpus
     auto_batch_size: False   # so train.py won't re-probe
-- Optionally sets max_tokens_budget for checkpoint scheduling.
 
 Run this once before submitting training jobs so that Slurm scripts
 can allocate the right number of GPUs per config.
@@ -26,6 +25,7 @@ from typing import List, Optional
 import torch
 import yaml
 from models import construct_model
+from utils import get_config_paths
 from scripts.probe_batch_size import (
     get_batch_config,
     get_recommended_num_gpus,
@@ -57,7 +57,8 @@ def prepare_single_config(
 ) -> None:
     """Probe batch config and write fields back into a single YAML config."""
     cfg = load_config_simple(str(config_path))
-
+    if max_gpus_cap is None:
+        raise RuntimeError("Max gpu limit needs to be set")
     if not torch.cuda.is_available():
         raise RuntimeError(
             "CUDA is not available; prepare_config_resources.py must run on a GPU node "
@@ -68,7 +69,7 @@ def prepare_single_config(
     model = model.to(device)
 
     # Probe on a single GPU: this finds the largest micro_batch_size that fits.
-    micro_bs, grad_accum, recommended_gpus = get_batch_config(
+    micro_bs, _, initial_recommended_gpus = get_batch_config(
         cfg,
         model,
         device=device,
@@ -77,17 +78,22 @@ def prepare_single_config(
 
     target_global = get_target_global_batch_for_tokens(cfg.n_tokens)
     
-    print("Initial recommended_num_gpus based on target_global_batch and micro_batch_size:", recommended_gpus)
-    if max_gpus_cap is not None and max_gpus_cap > 0:
-        recommended_gpus = max(1, min(recommended_gpus, max_gpus_cap))
-        print(f"Recommended_num_gpus after applying max_gpus_cap of {max_gpus_cap}:", recommended_gpus)
-    
+    print("Initial recommended_num_gpus based on target_global_batch and micro_batch_size:", initial_recommended_gpus)
+    recommended_gpus = max(1, min(initial_recommended_gpus, max_gpus_cap))
+    print(f"Recommended_num_gpus after applying max_gpus_cap of {max_gpus_cap}:", recommended_gpus)
+
+    grad_accum = max(
+        1,
+        (target_global + micro_bs * recommended_gpus - 1) // (micro_bs * recommended_gpus),
+    )
+    print(f"Newly calculated grad acc after changes in number of GPUs: {grad_accum}")
+
     with config_path.open("r") as f:
         config_dict = yaml.safe_load(f)
 
     config_dict["micro_batch_size"] = int(micro_bs)
     config_dict["grad_accumulation_steps"] = int(grad_accum)
-    config_dict["recommended_num_gpus"] = int(recommended_gpus)
+    config_dict["recommended_num_gpus"] = int()
     # Disable in-train probing so train.py just uses these values
     config_dict["auto_batch_size"] = False
 
@@ -129,8 +135,8 @@ def main() -> None:
     p.add_argument(
         "--max-gpus-cap",
         type=int,
-        default=8,
-        help="Upper cap for recommended_num_gpus (default: 8).",
+        default=1,
+        help="Upper cap for recommended_num_gpus (default: 1).",
     )
     args = p.parse_args()
 
@@ -160,27 +166,15 @@ def main() -> None:
         return
 
     # Directory (NePS) mode
-    root = Path(args.neps_configs_dir)
-    if not root.is_dir():
-        raise NotADirectoryError(f"Not a directory: {root}")
-
-    config_paths = []
-    for config_dir in sorted(root.iterdir()):
-        if not config_dir.is_dir() or not config_dir.name.startswith("config_"):
-            continue
-        cfg_path = config_dir / "config.yaml"
-        if cfg_path.is_file():
-            config_paths.append(cfg_path)
-
-    if not config_paths:
-        print(f"No config_*/config.yaml files found under {root}")
-        return
+    config_paths = get_config_paths(args.neps_configs_dir)
+    if config_paths is None:
+        raise Exception("No configs found")
 
     max_tokens_budget = get_max_tokens_from_configs(config_paths)
     if max_tokens_budget > 0:
         print(f"Auto-detected max_tokens_budget={max_tokens_budget} across {len(config_paths)} configs")
 
-    print(f"Found {len(config_paths)} configs under {root}")
+    print(f"Found {len(config_paths)} configs under {args.neps_configs_dir}")
     for cfg_path in config_paths:
         try:
             prepare_single_config(
