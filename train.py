@@ -191,12 +191,17 @@ def main(_):
         except Exception as e:
             print_master(f'Could not update config for resume: {e}')
 
-    try:
-        metrics_file_path = utils.get_exp_dir_path(cfg).join("metrics.json")
-        with open(metrics_file_path, 'r') as f:
-            metrics = json.load(f)
-    except Exception as e:
-        print("Couldn't read metrics file: {}".format(e))
+    if master_process:
+        try:
+            exp_dir = Path(utils.get_exp_dir_path(cfg))
+            metrics_file_path = exp_dir / "metrics.json"
+            with open(metrics_file_path, 'r') as f:
+                metrics = json.load(f)
+        except Exception as e:
+            print("Couldn't read metrics file: {}".format(e))
+    else:
+        metrics = None
+
     # Save NePS report if requested
     if master_process and FLAGS.save_neps_report:
         neps_dir = FLAGS.neps_report_dir or FLAGS.neps_root_dir
@@ -214,8 +219,9 @@ def main(_):
                     'duration': training_duration,
                     'compute_formatted': format_flops(compute_flops) if compute_flops else None,
                     'train_loss': last_train_loss,
-                    'train_loss_array': metrics['train/loss'] if metrics['train/loss'] else None,
-                    'lr': metrics['lr'] if metrics['lr'] else None,
+                    'train_loss_array': metrics.get('train/loss') if metrics else None,
+                    'lr': metrics.get('lr') if metrics else None,
+                    'tokens': metrics.get('tokens') if metrics else None,
                     'n_data': n_data,
                     'n_param': n_params,
                     'flops': compute_flops,
