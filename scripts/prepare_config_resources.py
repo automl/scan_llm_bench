@@ -93,7 +93,7 @@ def prepare_single_config(
 
     config_dict["micro_batch_size"] = int(micro_bs)
     config_dict["grad_accumulation_steps"] = int(grad_accum)
-    config_dict["recommended_num_gpus"] = int()
+    config_dict["recommended_num_gpus"] = int(recommended_gpus)
     # Disable in-train probing so train.py just uses these values
     config_dict["auto_batch_size"] = False
 

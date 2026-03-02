@@ -16,7 +16,7 @@ def _optimizer(space):
 
 space = SpacePipeline()
 neps.extrapolate(
-    "../neps/neps_configs/Neps_Scale_Search_Space",
+    "neps/neps_configs/Neps_Scale_Search_Space",
     max_target_flops=1_000_000_000_000_000_000,
     optimizer=_optimizer,
 )
