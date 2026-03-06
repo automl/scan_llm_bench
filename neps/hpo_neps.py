@@ -40,8 +40,10 @@ from engine import TorchEngine
 from models import construct_model
 from models.params_flops import flops_from_config
 from scripts.probe_batch_size import get_target_global_batch_for_tokens
+from scripts.plot_utils import get_flops_from_neps_configs, get_params_from_neps_configs, get_tokens_from_neps_configs, format_params
 from torch_utils import destroy_ddp, pytorch_setup
 from utils import print_master
+from models.params_flops import total_training_flops, format_flops, flops_from_config
 
 
 def load_config_with_search_space(config_path: str) -> tuple[dict, dict]:
@@ -486,7 +488,29 @@ def main():
         max_evaluations=args.max_evaluations,
         optimizer=optimizer,
     )
+    configs_path = os.path.join(args.root_dir, "configs")
+    
+    if not os.path.exists(configs_path):
+        print(f"Warning: Config directory not found at {configs_path}. Skipping reporting.")
+        return
+    flops_data = get_flops_from_neps_configs(configs_path)
+    if not flops_data:
+        print("No configs with valid FLOPs found.")
+        exit(1)
+    print(f"Loaded {len(flops_data)} configs.")
+    print(f"FLOPs range: {format_flops(min(f for _, f in flops_data))} .. {format_flops(max(f for _, f in flops_data))}")
 
+    params_data = get_params_from_neps_configs(configs_path)
+    if params_data:
+        min_params = min(p for _, p in params_data)
+        max_params = max(p for _, p in params_data)
+        print(f"Parameter count range: {format_params(min_params)} .. {format_params(max_params)} (min {min_params:,} / max {max_params:,} total params)")
+
+    tokens_data = get_tokens_from_neps_configs(configs_path)
+    if tokens_data:
+        min_tokens = min(t for _, t in tokens_data)
+        max_tokens = max(t for _, t in tokens_data)
+        print(f"Token budget range: {min_tokens:,} .. {max_tokens:,} tokens")
 
 if __name__ == "__main__":
     main()

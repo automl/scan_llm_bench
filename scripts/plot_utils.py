@@ -336,11 +336,23 @@ def get_metrics_from_neps_reports(
             duration = extra.get("time_duration_seconds")
 
             if total_flops and duration:
+                # Load config to get recommended_num_gpus
+                config_path = config_dir / "config.yaml"
+                config_num_gpus = num_gpus  # fallback to provided num_gpus
+                if config_path.is_file():
+                    try:
+                        cfg = _load_config_from_path(config_path)
+                        recommended_num_gpus = getattr(cfg, "recommended_num_gpus", None)
+                        if recommended_num_gpus is not None:
+                            config_num_gpus = recommended_num_gpus
+                    except Exception:
+                        pass  # Use fallback num_gpus
+
                 # achieved_flops_per_sec = Total FLOPs / time in seconds
                 achieved_flops_per_sec = (total_flops / duration)
 
                 # MFU = Achieved / (Peak_Per_GPU * Num_GPUs)
-                mfu = (achieved_flops_per_sec / (peak_flops_per_sec * num_gpus)) * 100
+                mfu = (achieved_flops_per_sec / (peak_flops_per_sec * config_num_gpus)) * 100
 
                 results.append({
                     "config_id": config_dir.name,

@@ -46,13 +46,11 @@ def get_target_global_batch_for_tokens(n_tokens: int) -> int:
     """
     if n_tokens < 100_000_000:
         return 16
-    if n_tokens < 500_000_000:
-        return 32
     if n_tokens < 1_000_000_000:
+        return 32
+    if n_tokens < 10_000_000_000:
         return 64
-    if n_tokens < 3_000_000_000:
-        return 128
-    return 256
+    return 128
 
 
 def dummy_batch(bs: int, seq_len: int, vocab_size: int, device: str):
