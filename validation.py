@@ -54,15 +54,28 @@ def main(_):
     # Load config and checkpoint
     CFG_PATH = FLAGS.config
     cfg, _ = load_config(CFG_PATH)
-    ckpt = maybe_load_checkpoint(cfg)
     local_rank, world_size, device, master_process = pytorch_setup(cfg)
     model, _, compute_flops = construct_model(cfg)
     _, validloader = get_dataloaders(cfg)
-    engine = TorchEngine(model, cfg, device, local_rank, ckpt)
+    ckpt_dir = os.path.join(cfg.out_dir, cfg.resume_exp_name)
+    files = [files for files in os.listdir(ckpt_dir) if files.endswith('.pth')]
+    step_values = [step.split(".")[0].split("_")[-1] for step in files]
+    valid_losses = []
+    valid_steps = []
+    last_valid_loss = None
+    for step in step_values:
+        cfg = cfg._replace(resume_step=step)
+        print(f"Loading checkpoint from step {cfg.resume_step} for validation...")
+        ckpt = maybe_load_checkpoint(cfg)
+        engine = TorchEngine(model, cfg, device, local_rank, ckpt)
 
-    # Evaluate model on validation set
-    valid_loss = engine.eval(validloader)
-    print(f"Validation loss: {valid_loss}")
+        # Evaluate model on validation set
+        valid_loss = engine.eval(validloader)
+        print(f"Validation loss: {valid_loss} on step: {step}")
+        last_valid_loss = valid_loss
+        valid_losses.append(valid_loss)
+        valid_steps.append(int(step))
+
 
     # Update NePS report
     neps_dir = FLAGS.neps_report_dir or FLAGS.neps_root_dir
@@ -80,9 +93,11 @@ def main(_):
             print(f"Report not found: {report_path}. Creating minimal report with valid_loss.")
             report = {
                 "cost": compute_flops if compute_flops else None,
-                "objective_to_minimize": valid_loss,
+                "objective_to_minimize": last_valid_loss,
                 "extra": 
-                    {"valid_loss": valid_loss, 
+                    {"last_valid_loss": last_valid_loss,
+                     "valid_losses": valid_losses,
+                     "valid_steps": valid_steps,
                      "n_params": n_params,
                      'compute_formatted': format_flops(compute_flops) if compute_flops else None,
                      "flops": compute_flops if compute_flops else None,
@@ -93,21 +108,23 @@ def main(_):
         else:
             with open(report_path, "r") as f:
                 report = yaml.safe_load(f)
-            report["objective_to_minimize"] = valid_loss
+            report["objective_to_minimize"] = last_valid_loss
             extra = report.get("extra") or {}
             if not isinstance(extra, dict):
                 extra = {}
-            extra["valid_loss"] = valid_loss
+            extra["last_valid_loss"] = last_valid_loss
+            extra["valid_losses"] = valid_losses
+            extra["valid_steps"] = valid_steps
             report["extra"] = extra
             if "info_dict" not in report and "extra" in report:
                 report["info_dict"] = report["extra"]
 
         user_result = {
-            "objective_to_minimize": valid_loss,
+            "objective_to_minimize": last_valid_loss,
             "cost": report.get("cost"),
             "info_dict": report.get("extra") or report.get("info_dict") or {},
         }
-        user_result["info_dict"]["valid_loss"] = valid_loss
+        user_result["info_dict"]["valid_loss"] = last_valid_loss
 
         try:
             from neps import save_pipeline_results
