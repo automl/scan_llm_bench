@@ -56,13 +56,16 @@ def main(_):
     cfg, _ = load_config(CFG_PATH)
     local_rank, world_size, device, master_process = pytorch_setup(cfg)
     model, _, compute_flops = construct_model(cfg)
-    _, validloader = get_dataloaders(cfg)
+    _, validloader, testloader = get_dataloaders(cfg)
+    print(f"Loaded model and dataloaders. Validloader length = {len(validloader)}, Testloader length = {len(testloader)}.")
     ckpt_dir = os.path.join(cfg.out_dir, cfg.resume_exp_name)
     files = [files for files in os.listdir(ckpt_dir) if files.endswith('.pth')]
     step_values = [step.split(".")[0].split("_")[-1] for step in files]
     valid_losses = []
-    valid_steps = []
+    test_losses = []
+    eval_steps = []
     last_valid_loss = None
+    last_test_loss = None   
     for step in step_values:
         cfg = cfg._replace(resume_step=step)
         print(f"Loading checkpoint from step {cfg.resume_step} for validation...")
@@ -72,9 +75,13 @@ def main(_):
         # Evaluate model on validation set
         valid_loss = engine.eval(validloader)
         print(f"Validation loss: {valid_loss} on step: {step}")
+        test_loss = engine.eval(testloader)
+        print(f"Test loss: {test_loss} on step: {step}")
         last_valid_loss = valid_loss
+        last_test_loss = test_loss
         valid_losses.append(valid_loss)
-        valid_steps.append(int(step))
+        test_losses.append(test_loss)
+        eval_steps.append(int(step))
 
 
     # Update NePS report
@@ -97,7 +104,9 @@ def main(_):
                 "extra": 
                     {"last_valid_loss": last_valid_loss,
                      "valid_losses": valid_losses,
-                     "valid_steps": valid_steps,
+                     "last_test_loss": last_test_loss,
+                     "test_losses": test_losses,
+                     "eval_steps": eval_steps,
                      "n_params": n_params,
                      'compute_formatted': format_flops(compute_flops) if compute_flops else None,
                      "flops": compute_flops if compute_flops else None,
@@ -114,7 +123,9 @@ def main(_):
                 extra = {}
             extra["last_valid_loss"] = last_valid_loss
             extra["valid_losses"] = valid_losses
-            extra["valid_steps"] = valid_steps
+            extra["last_test_loss"] = last_test_loss
+            extra["test_losses"] = test_losses
+            extra["eval_steps"] = eval_steps
             report["extra"] = extra
             if "info_dict" not in report and "extra" in report:
                 report["info_dict"] = report["extra"]
@@ -125,6 +136,7 @@ def main(_):
             "info_dict": report.get("extra") or report.get("info_dict") or {},
         }
         user_result["info_dict"]["valid_loss"] = last_valid_loss
+        user_result["info_dict"]["test_loss"] = last_test_loss
 
         try:
             from neps import save_pipeline_results

@@ -1,3 +1,5 @@
+import os
+
 import torch
 
 from datasets import Dataset, load_from_disk
@@ -73,6 +75,7 @@ def get_dataloaders(cfg):
 
   if not cfg.validset_path:
     validloader = None
+    test_loader = None
   else:
     if _is_bin_chunk_format(cfg.validset_path):
       valid_set = BinChunkMapDataset(
@@ -85,26 +88,48 @@ def get_dataloaders(cfg):
       valid_set = load_from_disk(cfg.validset_path)
       if not isinstance(valid_set, Dataset):
         raise ValueError("'dataset' should be a datasets.Dataset")
+    test_path = cfg.validset_path.replace('validation', 'test')
+    print(f"test data path: {test_path}.")
+    if _is_bin_chunk_format(test_path):
+      test_set = BinChunkMapDataset(
+        test_path,
+        target_seq_len=target_seq_len,
+        pad_token_id=0,
+        vocab_size=getattr(cfg, 'vocab_size', None),
+      )
+    else:
+      test_set = load_from_disk(test_path) if os.path.exists(test_path) else None
 
     if getattr(cfg, 'valid_tokens', False):
-      valid_rows = cfg.valid_tokens // (cfg.seq_len + 1)
+      min_valid_tokens = 4_000_000 # for enough samples to get stable eval results, especially for larger models
+      valid_tokens = max(cfg.valid_tokens, min_valid_tokens)
+      valid_rows = valid_tokens // (cfg.seq_len + 1)
+      test_rows = valid_tokens // (cfg.seq_len + 1)
+
       if hasattr(valid_set, 'take'):
         valid_set = valid_set.take(valid_rows)
+        test_set = test_set.take(test_rows) if test_set else None
       else:
         valid_set = Subset(valid_set, range(min(valid_rows, len(valid_set))))
+        test_set = Subset(test_set, range(min(test_rows, len(test_set)))) if test_set else None
 
     if ddp:
       valid_sampler = DistributedSampler(valid_set, drop_last=True)
+      test_sampler = DistributedSampler(test_set, drop_last=True) if test_set else None
     else:
       valid_sampler = SequentialSampler(valid_set)
+      test_sampler = SequentialSampler(test_set) if test_set else None
 
     if hasattr(valid_set, 'column_names'):
       valid_columns = valid_set.column_names
+      test_columns = test_set.column_names if test_set else None
     elif hasattr(valid_set, 'dataset') and hasattr(valid_set.dataset, 'column_names'):
       valid_columns = valid_set.dataset.column_names
+      test_columns = test_set.dataset.column_names if test_set else None
     else:
       valid_columns = []
-
+      test_columns = []
+      
     validloader = DataLoader(
       valid_set,
       batch_size=cfg.micro_batch_size,
@@ -117,8 +142,22 @@ def get_dataloaders(cfg):
       persistent_workers=False,
       collate_fn=collate_fn if 'docs_lengths' in valid_columns else None,
     )
+    test_loader = None
+    if test_set is not None:
+      test_loader = DataLoader(
+        test_set,
+        batch_size=cfg.micro_batch_size,
+        drop_last=True,  # makes eval with DDP easier
+        shuffle=False,
+        sampler=test_sampler,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+        prefetch_factor=2 if cfg.num_workers > 0 else None,
+        persistent_workers=False,
+        collate_fn=collate_fn if 'docs_lengths' in test_columns else None,
+      )
 
-  return trainloader, validloader
+  return trainloader, validloader, test_loader
 
 
 def _get_sampler(train_set, cfg):

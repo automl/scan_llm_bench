@@ -112,7 +112,7 @@ def main(_):
             'Using config micro_batch_size and grad_accumulation_steps (no auto batch-size probing).')
 
     # Dataset (uses the potentially updated micro_batch_size)
-    trainloader, validloader = get_dataloaders(cfg)
+    trainloader, _, _ = get_dataloaders(cfg)
 
     global_batch = cfg.micro_batch_size * cfg.grad_accumulation_steps * world_size
     steps_budget = max(1, cfg.n_tokens // (cfg.seq_len * global_batch))

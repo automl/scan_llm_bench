@@ -30,7 +30,7 @@ CONFIG_COLS = [
     "weight_decay",
     "beta1",
     "beta2",
-    "grad_clip",
+    # "grad_clip",
     "warmup_steps",
     "cooldown_steps",
 ]
@@ -73,20 +73,23 @@ def parse_config(config_dir: Path) -> list[dict] | None:
         return None
 
     valid_losses = extra.get("valid_losses") or rpt.get("valid_losses")
-    valid_steps = extra.get("valid_steps") or rpt.get("valid_steps")
+    test_losses = extra.get("test_losses") or rpt.get("test_losses")
+    eval_steps = extra.get("eval_steps") or rpt.get("eval_steps")
 
     # Fall back to top‑level lists if stored there
     if valid_losses is None:
         valid_losses = rpt.get("valid_losses")
-    if valid_steps is None:
-        valid_steps = rpt.get("valid_steps")
+    if test_losses is None:
+        test_losses = rpt.get("test_losses")
+    if eval_steps is None:
+        eval_steps = rpt.get("eval_steps")
 
-    if not valid_losses or not valid_steps:
-        print(f"  [WARN] {config_dir.name}: Missing valid_losses or valid_steps, skipping")
+    if not valid_losses or not eval_steps or not test_losses:
+        print(f"  [WARN] {config_dir.name}: Missing valid_losses, eval_steps, or test_losses, skipping")
         return None
-    if len(valid_losses) != len(valid_steps):
+    if len(valid_losses) != len(eval_steps) and len(test_losses) != len(eval_steps):
         print(f"  [WARN] {config_dir.name}: valid_losses ({len(valid_losses)}) "
-              f"!= valid_steps ({len(valid_steps)}), skipping")
+              f"!= eval_steps ({len(eval_steps)}) != test_losses ({len(test_losses)}), skipping")
         return None
 
     config_id = config_dir.name  # "config_1"
@@ -112,37 +115,44 @@ def parse_config(config_dir: Path) -> list[dict] | None:
     # LR and tokens arrays for interpolation
     lr_array = extra.get("lr", [])
     tokens_array = extra.get("tokens", [])
+    train_array = extra.get("train_loss_array", [])
 
     # The lr/tokens arrays are logged at log_every_steps.
     # Map validation steps to the closest index in these arrays.
     log_every = cfg.get("log_every_steps", 50)
 
     rows: list[dict] = []
-    for i, (v_step, v_loss) in enumerate(zip(valid_steps, valid_losses)):
+    for i, (eval_step, v_loss, t_loss) in enumerate(zip(eval_steps, valid_losses, test_losses)):
         row = dict(base_row)
 
         # Approximate index into lr/tokens arrays
         if lr_array:
-            idx = _closest_index(v_step, log_every, len(lr_array))
+            idx = _closest_index(eval_step, log_every, len(lr_array))
             row["current_lr"] = lr_array[idx]
         else:
             row["current_lr"] = None
 
         if tokens_array:
-            idx = _closest_index(v_step, log_every, len(tokens_array))
+            idx = _closest_index(eval_step, log_every, len(tokens_array))
             row["tokens_so_far"] = tokens_array[idx]
         else:
             row["tokens_so_far"] = None
+            
+        if train_array:
+            idx = _closest_index(eval_step, log_every, len(train_array))
+            row["train_loss_so_far"] = train_array[idx]
+        else:
+            row["train_loss_so_far"] = None
 
         # Estimated FLOPs up to this step
         if total_cost and max_steps and max_steps > 0:
-            row["flops_so_far"] = v_step / max_steps * total_cost
+            row["flops_so_far"] = eval_step / max_steps * total_cost
         else:
             row["flops_so_far"] = None
 
-        row["valid_step"] = v_step
+        row["eval_step"] = eval_step
         row["valid_loss"] = v_loss
-
+        row["test_loss"] = t_loss
         rows.append(row)
 
     return rows
