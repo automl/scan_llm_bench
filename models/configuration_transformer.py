@@ -28,4 +28,5 @@ class TransformerHuggingFaceConfig(PretrainedConfig):
         self.mlp = mlp
         self.rmsnorm_eps = rmsnorm_eps
         self.tie_embeddings = tie_embeddings
+        kwargs.pop("tie_word_embeddings", None)
         super().__init__(tie_word_embeddings=tie_embeddings, **kwargs)

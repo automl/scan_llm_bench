@@ -43,6 +43,9 @@ from models.modeling_transformer import TransformerHuggingFace
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 
+DEFAULT_HF_CACHE_DIR = "/work/dlclarge2/sermaxha-scan_thesis/storage_hub/hf_cache/huggingface"
+
+
 def _strip_ddp_compile_prefixes(state_dict: dict) -> dict:
     """Remove ``module.`` (DDP) and ``_orig_mod.`` (torch.compile) prefixes."""
     cleaned = {}
@@ -93,7 +96,41 @@ def main():
             "Default: EleutherAI/gpt-neox-20b (same as training)."
         ),
     )
+    parser.add_argument(
+        "--disable_safe_serialization",
+        action="store_true",
+        help=(
+            "Disable safetensors serialization and save PyTorch bin weights instead. "
+            "Only use this if a specific Transformers version still errors on shared tied weights."
+        ),
+    )
+    parser.add_argument(
+        "--hf_cache_dir",
+        type=str,
+        default=DEFAULT_HF_CACHE_DIR,
+        help=(
+            "Hugging Face cache root directory (HF_HOME). "
+            "Used for tokenizer/model downloads and cache writes."
+        ),
+    )
+    parser.add_argument(
+        "--tokenizer_local_files_only",
+        action="store_true",
+        help=(
+            "Load tokenizer from local cache/files only (no network). "
+            "Useful on cluster nodes without internet access."
+        ),
+    )
     args = parser.parse_args()
+
+    hf_home = args.hf_cache_dir
+    hf_hub_cache = os.path.join(hf_home, "hub")
+    hf_assets_cache = os.path.join(hf_home, "assets")
+    os.makedirs(hf_hub_cache, exist_ok=True)
+    os.makedirs(hf_assets_cache, exist_ok=True)
+    os.environ["HF_HOME"] = hf_home
+    os.environ["HF_HUB_CACHE"] = hf_hub_cache
+    os.environ["HUGGINGFACE_HUB_CACHE"] = hf_hub_cache
 
     config_path = args.config
     if config_path is None:
@@ -142,9 +179,15 @@ def main():
     if not missing and not unexpected:
         print("  All weights loaded successfully (strict match).")
 
+    if hf_model.config.tie_word_embeddings:
+        hf_model.tie_weights()
+
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
-    hf_model.save_pretrained(output_dir)
+    hf_model.save_pretrained(
+        output_dir,
+        safe_serialization=not args.disable_safe_serialization,
+    )
     print(f"Saved HF model to {output_dir}")
 
     models_dir = REPO_ROOT / "models"
@@ -159,22 +202,12 @@ def main():
         dst = os.path.join(output_dir, src_name)
         shutil.copy2(str(src), dst)
 
-    for fname in [
-        "modeling_transformer.py",
-        "transformer.py",
-    ]:
-        fpath = os.path.join(output_dir, fname)
-        with open(fpath, "r") as f:
-            text = f.read()
-        text = text.replace("from .configuration_transformer", "from configuration_transformer")
-        text = text.replace("from .transformer", "from transformer")
-        text = text.replace("from .components", "from components")
-        text = text.replace("from .embeddings", "from embeddings")
-        with open(fpath, "w") as f:
-            f.write(text)
-
     print(f"Saving tokenizer ({args.tokenizer}) ...")
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer,
+        cache_dir=hf_hub_cache,
+        local_files_only=args.tokenizer_local_files_only,
+    )
     tokenizer.save_pretrained(output_dir)
     print(f"Tokenizer saved to {output_dir}")
 

@@ -109,8 +109,9 @@ class Transformer(nn.Module):
     # x: (bsz, seqlen)
     x = self.embed_tokens(x)  # (bsz, seqlen, dim)
     self.freqs_cis = self.freqs_cis.to(x.device)
+    freqs_cis = self.freqs_cis[:, :x.shape[1]]
     for layer in self.layers:
-      x = layer(x, self.freqs_cis, attn_mask)  # (bsz, seqlen, dim)
+      x = layer(x, freqs_cis, attn_mask)  # (bsz, seqlen, dim)
     return self.lm_head(self.out_norm(x))  # (bsz, seqlen, vocab_size)
 
   def _init_weights(self, module):

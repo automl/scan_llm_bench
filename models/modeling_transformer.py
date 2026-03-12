@@ -4,17 +4,20 @@ Wrap the original Transformer class so that lm-evaluation-harness can load the m
 """
 
 import torch
-from transformers import PreTrainedModel
+from transformers import GenerationMixin, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from .configuration_transformer import TransformerHuggingFaceConfig
+from .components import GLU, MLP, MLPReluSquared, RMSNorm
+from .embeddings import apply_rotary_emb_complex_like, precompute_freqs_cis
 from .transformer import Transformer, ModelConfig
 
 
-class TransformerHuggingFace(PreTrainedModel):
+class TransformerHuggingFace(PreTrainedModel, GenerationMixin):
     config_class = TransformerHuggingFaceConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = False
+    _tied_weights_keys = {"model.lm_head.weight": "model.embed_tokens.weight"}
 
     def __init__(self, config: TransformerHuggingFaceConfig):
         super().__init__(config)
@@ -46,6 +49,11 @@ class TransformerHuggingFace(PreTrainedModel):
 
     def set_output_embeddings(self, new_embeddings):
         self.model.lm_head = new_embeddings
+
+    def tie_weights(self, **kwargs):
+        if self.config.tie_word_embeddings:
+            self.model.tie_weights()
+        return super().tie_weights(**kwargs)
 
     def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
         logits = self.model(input_ids, attn_mask=None)
