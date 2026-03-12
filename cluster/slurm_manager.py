@@ -20,6 +20,7 @@ Usage examples at the bottom of this file and via:
 
 import textwrap
 import subprocess
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -44,6 +45,13 @@ CLUSTER_CONFIGS: dict[str, ClusterConfig] = {
         load_env=(
             "source ~/anaconda3/bin/activate\n"
             "conda activate scan_llm\n"
+        ),
+    ),
+    "test_eval": ClusterConfig(
+        partition="testdlc2_gpu-l40s",
+        load_env=(
+            "source ~/anaconda3/bin/activate\n"
+            "conda activate lm_eval\n"
         ),
     ),
     "meta": ClusterConfig(
@@ -687,7 +695,134 @@ python -u validation.py \
         return _write_script(path, script)
 
 
-    # 8. Probe batch size
+    # 8. LM-eval as SLURM array job over exported HF model folders
+    def build_lm_eval_array(
+        self,
+        hf_exports_dir: str,
+        results_root: str = "eval_results",
+        tasks: str = "hellaswag",
+        device: str = "cuda:0",
+        batch_size: str = "auto",
+        max_concurrent: int | None = None,
+        model_dir_pattern: str = "config_*_step_*",
+        hf_cache_root: str = "/work/dlclarge2/sermaxha-scan_thesis/storage_hub/hf_cache/huggingface",
+        job_name: str | None = None,
+        time_hours: int | None = None,
+        save_to: Path | None = None,
+    ) -> Path:
+        """Each SLURM array task evaluates one exported HF model directory."""
+        exports_path = Path(hf_exports_dir)
+        if not exports_path.is_absolute():
+            exports_path = (self.workspace_dir / exports_path).resolve()
+
+        if not exports_path.is_dir():
+            raise NotADirectoryError(f"HF exports directory does not exist: {exports_path}")
+
+        model_dirs = [p for p in exports_path.glob(model_dir_pattern) if p.is_dir()]
+        if not model_dirs:
+            raise ValueError(
+                f"No model directories found in {exports_path} matching pattern {model_dir_pattern!r}"
+            )
+
+        parsed: list[tuple[int, int]] = []
+        for path in model_dirs:
+            match = re.match(r"^config_(\d+)_step_(\d+)$", path.name)
+            if not match:
+                raise ValueError(
+                    f"Model directory {path.name!r} does not match required format "
+                    f"'config_<num>_step_<num>'"
+                )
+            parsed.append((int(match.group(1)), int(match.group(2))))
+
+        parsed.sort(key=lambda pair: (pair[0], pair[1]))
+
+        array_spec = f"0-{len(model_dirs) - 1}"
+        if max_concurrent:
+            array_spec += f"%{max_concurrent}"
+
+        name = job_name or f"Array_LM_Eval_{exports_path.name}"
+        t = time_hours or self.time_hours
+        header = self._sbatch_header(
+            job_name=name,
+            gpus=1,
+            mem_gb=self.mem_gb,
+            time_hours=t,
+            log_subdir="lm_eval",
+            array_range=array_spec,
+        )
+        preamble = self._preamble(log_subdir="lm_eval")
+
+        results_root_path = Path(results_root)
+        if not results_root_path.is_absolute():
+            results_root_path = (self.workspace_dir / results_root_path).resolve()
+
+        task_keys_literal = "\n".join(
+            f'TASK_KEYS+=("{config_num}_{step}")' for config_num, step in parsed
+        )
+
+        script = f"""#!/bin/bash
+{header}
+
+{preamble}
+HF_CACHE_ROOT="${{HF_CACHE_ROOT:-{hf_cache_root}}}"
+export HF_HOME="$HF_CACHE_ROOT"
+export HF_HUB_CACHE="${{HF_HOME}}/hub"
+export HUGGINGFACE_HUB_CACHE="${{HF_HOME}}/hub"
+export HF_MODULES_CACHE="${{HF_HOME}}/modules"
+export TRANSFORMERS_CACHE="${{HF_HOME}}/hub"
+
+mkdir -p "${{HF_HOME}}" "${{HF_HUB_CACHE}}" "${{HF_HOME}}/assets" "${{HF_MODULES_CACHE}}"
+
+HF_EXPORTS_DIR="${{HF_EXPORTS_DIR:-{exports_path}}}"
+RESULTS_ROOT="{results_root_path}"
+TASKS="${{TASKS:-{tasks}}}"
+DEVICE="${{DEVICE:-{device}}}"
+BATCH_SIZE="${{BATCH_SIZE:-{batch_size}}}"
+
+mkdir -p "$RESULTS_ROOT"
+
+TASK_KEYS=()
+{task_keys_literal}
+
+if [[ -z "${{SLURM_ARRAY_TASK_ID:-}}" ]]; then
+    echo "ERROR: SLURM_ARRAY_TASK_ID is not set"
+    exit 1
+fi
+if [[ "$SLURM_ARRAY_TASK_ID" -ge "${{#TASK_KEYS[@]}}" ]]; then
+    echo "ERROR: SLURM_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID out of range for ${{#TASK_KEYS[@]}} models"
+    exit 1
+fi
+
+TASK_KEY="${{TASK_KEYS[$SLURM_ARRAY_TASK_ID]}}"
+IFS='_' read -r CONFIG_NUM STEP <<< "$TASK_KEY"
+MODEL_NAME="config_${{CONFIG_NUM}}_step_${{STEP}}"
+MODEL_DIR="${{HF_EXPORTS_DIR}}/${{MODEL_NAME}}"
+if [[ ! -d "$MODEL_DIR" ]]; then
+    echo "ERROR: model directory not found: $MODEL_DIR"
+    exit 1
+fi
+
+RESULT_DIR="$RESULTS_ROOT/$MODEL_NAME"
+mkdir -p "$RESULT_DIR"
+
+echo "LM-eval array task index: $SLURM_ARRAY_TASK_ID"
+echo "Task key: $TASK_KEY"
+echo "Model: $MODEL_NAME"
+echo "Model dir: $MODEL_DIR"
+echo "Result dir: $RESULT_DIR"
+
+lm_eval --model hf \
+    --model_args "pretrained=${{MODEL_DIR}},trust_remote_code=True" \
+    --tasks "$TASKS" \
+    --device "$DEVICE" \
+    --batch_size "$BATCH_SIZE" \
+    --output_path "$RESULT_DIR"
+"""
+        path = save_to or self.output_dir / "run_lm_eval_array.sh"
+        return _write_script(path, script)
+
+
+    # 9. Probe batch size
     def build_probe_batch_size(
         self,
         config_path: str,
@@ -753,7 +888,7 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         return _write_script(path, script)
 
 
-    # 9. Plot
+    # 10. Plot
     def build_plot(
         self,
         neps_configs_dir: str,
@@ -800,7 +935,7 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         return _write_script(path, script)
 
 
-    # 10. Prepare resources (batch size, grad_accum, GPUs) for NePS configs
+    # 11. Prepare resources (batch size, grad_accum, GPUs) for NePS configs
     def build_prepare_resources(
         self,
         neps_root_dir: str,
@@ -848,7 +983,7 @@ python -u scripts/probe_batch_size.py --config="{config_path}"{size_arg}
         return _write_script(path, script)
 
 
-    # 11. Generate ALL scripts for a full pipeline
+    # 12. Generate ALL scripts for a full pipeline
     def generate_all(
         self,
         hpo_config: str,
@@ -1000,6 +1135,12 @@ def main():
             --neps_root_dir /work/.../neps/neps_configs/Neps_Test \\
             --start_config 1 --end_config 50
 
+        # Generate LM-eval array job over exported HF checkpoints:
+        python cluster/slurm_manager.py lm_eval_array \
+            --hf_exports_dir /work/.../scan_llm_bench/hf_checkpoints \
+            --results_root /work/.../scan_llm_bench/eval_results \
+            --max_concurrent 8
+
         # Generate and immediately submit:
         python cluster/slurm_manager.py train_seq \\
             --neps_root_dir /work/.../neps/neps_configs/Neps_Test \\
@@ -1144,6 +1285,24 @@ def main():
     p_varray.add_argument("--start_config", type=int, default=1)
     p_varray.add_argument("--end_config", type=int, default=50)
     p_varray.add_argument("--max_concurrent", type=int, default=None)
+
+    # -- lm_eval_array --
+    p_lm_eval_array = sub.add_parser(
+        "lm_eval_array",
+        help="SLURM array job for lm-eval over exported HF model directories",
+    )
+    p_lm_eval_array.add_argument("--hf_exports_dir", required=True,
+                                 help="Root dir containing exported model dirs (e.g. config_100_step_787)")
+    p_lm_eval_array.add_argument("--results_root", default="eval_results")
+    p_lm_eval_array.add_argument("--tasks", default="hellaswag")
+    p_lm_eval_array.add_argument("--device", default="cuda:0")
+    p_lm_eval_array.add_argument("--batch_size", default="auto")
+    p_lm_eval_array.add_argument("--max_concurrent", type=int, default=None)
+    p_lm_eval_array.add_argument("--model_dir_pattern", default="config_*_step_*")
+    p_lm_eval_array.add_argument(
+        "--hf_cache_root",
+        default="/work/dlclarge2/sermaxha-scan_thesis/storage_hub/hf_cache/huggingface",
+    )
 
     # -- probe --
     p_probe = sub.add_parser("probe", help="Probe max batch size")
@@ -1294,6 +1453,17 @@ def main():
             array_start=args.start_config,
             array_end=args.end_config,
             max_concurrent=args.max_concurrent,
+        )
+    elif args.mode == "lm_eval_array":
+        path = mgr.build_lm_eval_array(
+            hf_exports_dir=args.hf_exports_dir,
+            results_root=args.results_root,
+            tasks=args.tasks,
+            device=args.device,
+            batch_size=args.batch_size,
+            max_concurrent=args.max_concurrent,
+            model_dir_pattern=args.model_dir_pattern,
+            hf_cache_root=args.hf_cache_root,
         )
     elif args.mode == "probe":
         model_sz = ModelSize(args.model_size) if args.model_size else None
