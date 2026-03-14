@@ -59,7 +59,8 @@ def main(_):
     _, validloader, testloader = get_dataloaders(cfg)
     print(f"Loaded model and dataloaders. Validloader length = {len(validloader)}, Testloader length = {len(testloader)}.")
     ckpt_dir = os.path.join(cfg.out_dir, cfg.resume_exp_name)
-    files = [files for files in os.listdir(ckpt_dir) if files.endswith('.pth')]
+    files = sorted([f for f in os.listdir(ckpt_dir) if f.endswith('.pth')],
+            key=lambda f: int(f.split(".")[0].split("_")[-1]))
     step_values = [step.split(".")[0].split("_")[-1] for step in files]
     valid_losses = []
     test_losses = []
@@ -100,7 +101,7 @@ def main(_):
             print(f"Report not found: {report_path}. Creating minimal report with valid_loss.")
             report = {
                 "cost": compute_flops if compute_flops else None,
-                "objective_to_minimize": last_valid_loss,
+                "objective_to_minimize": last_test_loss,
                 "extra": 
                     {"last_valid_loss": last_valid_loss,
                      "valid_losses": valid_losses,
@@ -117,7 +118,7 @@ def main(_):
         else:
             with open(report_path, "r") as f:
                 report = yaml.safe_load(f)
-            report["objective_to_minimize"] = last_valid_loss
+            report["objective_to_minimize"] = last_test_loss
             extra = report.get("extra") or {}
             if not isinstance(extra, dict):
                 extra = {}
@@ -131,7 +132,7 @@ def main(_):
                 report["info_dict"] = report["extra"]
 
         user_result = {
-            "objective_to_minimize": last_valid_loss,
+            "objective_to_minimize": last_test_loss,
             "cost": report.get("cost"),
             "info_dict": report.get("extra") or report.get("info_dict") or {},
         }
