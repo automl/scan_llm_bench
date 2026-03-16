@@ -1,0 +1,19 @@
+# python -m lm_eval --model hf --model_args "pretrained=${MODEL_DIR},trust_remote_code=True" --include_path ./config --tasks eval_suite  --device "$DEVICE"     --batch_size "$BATCH_SIZE"     --output_path "$RESULT_DIR"
+group: eval_suite
+task:
+  - task: hellaswag
+    num_fewshot: 10
+  - task: piqa
+    num_fewshot: 0
+  - task: openbookqa
+    num_fewshot: 0
+  - task: arc_easy
+    num_fewshot: 25
+  - task: arc_challenge
+    num_fewshot: 25
+  - task: lambada_openai
+    num_fewshot: 0
+  # - task: mmlu
+  #   num_fewshot: 5
+  - task: copa
+    num_fewshot: 0
