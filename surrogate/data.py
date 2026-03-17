@@ -12,9 +12,10 @@ class TorchSurrogateDataset(Dataset):
         self.target_col = target_col
 
         self.feature_cols = [
-            "lr", "wd", "beta1", "beta2", "eps", "warmup_fraction",
-            "vision_width", "text_width", "global_batch_size",
-            "total_samples_planned", "training_progress", "lr_ratio",
+        "d_model", "n_layers", "n_heads", "weight_decay", "beta1", "beta2",
+        "warmup_steps", "cooldown_steps", "initial_lr", "global_batch_size",
+        "final_step", "total_compute", "n_data", "n_param", "micro_batch_size",
+        "current_lr", "tokens_so_far", "train_loss_so_far", "flops_so_far", "eval_step",
         ]
         missing = [c for c in self.feature_cols + [target_col] if c not in self.df.columns]
         if missing:
@@ -27,22 +28,19 @@ class TorchSurrogateDataset(Dataset):
         row = self.df.iloc[idx]
 
         numeric = torch.tensor([
-            float(row["lr"]),
-            float(row["wd"]),
+            float(row["initial_lr"]),
+            float(row["weight_decay"]),
             float(row["beta1"]),
             float(row["beta2"]),
-            float(row["eps"]),
-            float(row["warmup_fraction"]),
-            float(row["mparams"]),
-            float(row["total_samples_planned"]),
-            float(row["training_progress"]),
-            float(row["lr_ratio"]),
+            float(row["current_lr"]),
+            float(row["warmup_steps"]),
+            float(row["cooldown_steps"]),
+            float(row["total_compute"]),
+            float(row["train_loss_so_far"]),
+            float(row["flops_so_far"]),
         ], dtype=torch.float32)
 
-        vision_vec = convert_width_to_one_hot(int(row["vision_width"])).to(torch.float32)
-        text_vec = convert_width_to_one_hot(int(row["text_width"])).to(torch.float32)
-
-        x = torch.cat([numeric, vision_vec, text_vec])
+        x = torch.cat([numeric])
 
         y = torch.tensor(float(row[self.target_col]), dtype=torch.float32)
         return x, y
@@ -54,13 +52,16 @@ class SurrogateDataset:
     Returns numpy arrays.
     """
 
-    DEFAULT_TARGETS = ["val_loss"]
-
+    DEFAULT_TARGETS = ["valid_loss"]
+    # DEFAULT_TARGETS = ["test_loss"]
+    # d_model;n_layers;n_heads;weight_decay;beta1;beta2;warmup_steps;cooldown_steps;initial_lr;
+    # global_batch_size;final_step;total_compute;n_data;n_param;micro_batch_size;
+    # current_lr;tokens_so_far;train_loss_so_far;flops_so_far;eval_step
     DEFAULT_FEATURES = [
-        "lr", "wd", "beta1", "beta2", "eps", "warmup_fraction",
-        "vision_width", "text_width", "mparams",
-        "total_samples_planned",
-        "training_progress", "lr_ratio",
+        "d_model", "n_layers", "n_heads", "weight_decay", "beta1", "beta2",
+        "warmup_steps", "cooldown_steps", "initial_lr", "global_batch_size",
+        "final_step", "total_compute", "n_data", "n_param", "micro_batch_size",
+        "current_lr", "tokens_so_far", "train_loss_so_far", "flops_so_far", "eval_step",
     ]
 
     def __init__(
