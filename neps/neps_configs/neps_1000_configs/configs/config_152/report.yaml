@@ -2,15 +2,180 @@ cost: 1.1027945535298339e+19
 err: null
 evaluation_duration: 1.1027945535298339e+19
 extra:
+  arc_challenge:
+  - acc,none: 0.21075085324232082
+    acc_norm,none: 0.25341296928327645
+    acc_norm_stderr,none: 0.012710896778378677
+    acc_stderr,none: 0.01191827175485213
+    alias: arc_challenge
+    date: 1773843326.2111385
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_12171/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_12171/results_2026-03-18T15-57-14.254157.json
+    name: arc_challenge
+    sample_len: 1172
+    step: 12171
+  - acc,none: 0.23293515358361774
+    acc_norm,none: 0.24914675767918087
+    acc_norm_stderr,none: 0.012639407111926505
+    acc_stderr,none: 0.012352507042617355
+    alias: arc_challenge
+    date: 1773843444.338712
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_24342/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_24342/results_2026-03-18T15-58-51.696640.json
+    name: arc_challenge
+    sample_len: 1172
+    step: 24342
+  - acc,none: 0.22440273037542663
+    acc_norm,none: 0.2508532423208191
+    acc_norm_stderr,none: 0.012668198621315347
+    acc_stderr,none: 0.012191404938603725
+    alias: arc_challenge
+    date: 1773843457.2592745
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_34296/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_34296/results_2026-03-18T15-59-18.079467.json
+    name: arc_challenge
+    sample_len: 1172
+    step: 34296
+  arc_easy:
+  - acc,none: 0.25673400673400676
+    acc_norm,none: 0.2542087542087542
+    acc_norm_stderr,none: 0.008934537681141764
+    acc_stderr,none: 0.008963590834042483
+    alias: arc_easy
+    date: 1773843326.2111385
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_12171/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_12171/results_2026-03-18T15-57-14.254157.json
+    name: arc_easy
+    sample_len: 2376
+    step: 12171
+  - acc,none: 0.2622053872053872
+    acc_norm,none: 0.25
+    acc_norm_stderr,none: 0.008885233166386385
+    acc_stderr,none: 0.009025197991724937
+    alias: arc_easy
+    date: 1773843444.338712
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_24342/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_24342/results_2026-03-18T15-58-51.696640.json
+    name: arc_easy
+    sample_len: 2376
+    step: 24342
+  - acc,none: 0.24957912457912457
+    acc_norm,none: 0.2601010101010101
+    acc_norm_stderr,none: 0.009001718541079735
+    acc_stderr,none: 0.008880241465504186
+    alias: arc_easy
+    date: 1773843457.2592745
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_34296/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_34296/results_2026-03-18T15-59-18.079467.json
+    name: arc_easy
+    sample_len: 2376
+    step: 34296
   compute_formatted: 11.03 EFLOPs
+  copa:
+  - acc,none: 0.53
+    acc_stderr,none: 0.05016135580465919
+    alias: copa
+    date: 1773843326.2111385
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_12171/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_12171/results_2026-03-18T15-57-14.254157.json
+    name: copa
+    sample_len: 100
+    step: 12171
+  - acc,none: 0.48
+    acc_stderr,none: 0.05021167315686783
+    alias: copa
+    date: 1773843444.338712
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_24342/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_24342/results_2026-03-18T15-58-51.696640.json
+    name: copa
+    sample_len: 100
+    step: 24342
+  - acc,none: 0.54
+    acc_stderr,none: 0.05009082659620331
+    alias: copa
+    date: 1773843457.2592745
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_34296/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_34296/results_2026-03-18T15-59-18.079467.json
+    name: copa
+    sample_len: 100
+    step: 34296
   duration: 20669.186323404312
   eval_steps:
   - 12171
   - 24342
   - 34296
+  eval_suite:
+  - alias: eval_suite
+    date: 1773843326.2111385
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_12171/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_12171/results_2026-03-18T15-57-14.254157.json
+    name: eval_suite
+    step: 12171
+  - alias: eval_suite
+    date: 1773843444.338712
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_24342/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_24342/results_2026-03-18T15-58-51.696640.json
+    name: eval_suite
+    step: 24342
+  - alias: eval_suite
+    date: 1773843457.2592745
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_34296/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_34296/results_2026-03-18T15-59-18.079467.json
+    name: eval_suite
+    step: 34296
   final_step: 34296
   flops: 11027945535298338816
   global_batch_size: 64
+  hellaswag:
+  - acc,none: 0.25562636924915355
+    acc_norm,none: 0.2640908185620394
+    acc_norm_stderr,none: 0.0043994691682725275
+    acc_stderr,none: 0.004353212146198103
+    alias: hellaswag
+    date: 1773843326.2111385
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_12171/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_12171/results_2026-03-18T15-57-14.254157.json
+    name: hellaswag
+    sample_len: 10042
+    step: 12171
+  - acc,none: 0.2522405895239992
+    acc_norm,none: 0.25542720573590916
+    acc_norm_stderr,none: 0.004352098082984506
+    acc_stderr,none: 0.004334110169012113
+    alias: hellaswag
+    date: 1773843444.338712
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_24342/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_24342/results_2026-03-18T15-58-51.696640.json
+    name: hellaswag
+    sample_len: 10042
+    step: 24342
+  - acc,none: 0.2529376618203545
+    acc_norm,none: 0.26329416450906196
+    acc_norm_stderr,none: 0.004395205528158065
+    acc_stderr,none: 0.0043380713189125845
+    alias: hellaswag
+    date: 1773843457.2592745
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_34296/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_34296/results_2026-03-18T15-59-18.079467.json
+    name: hellaswag
+    sample_len: 10042
+    step: 34296
+  lambada_openai:
+  - acc,none: 0.0
+    acc_stderr,none: 0.0
+    alias: lambada_openai
+    date: 1773843326.2111385
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_12171/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_12171/results_2026-03-18T15-57-14.254157.json
+    name: lambada_openai
+    perplexity,none: 13710402.966268292
+    perplexity_stderr,none: 1416764.332411809
+    sample_len: 5153
+    step: 12171
+  - acc,none: 0.0
+    acc_stderr,none: 0.0
+    alias: lambada_openai
+    date: 1773843444.338712
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_24342/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_24342/results_2026-03-18T15-58-51.696640.json
+    name: lambada_openai
+    perplexity,none: 10658483947.231827
+    perplexity_stderr,none: 1665344409.2149317
+    sample_len: 5153
+    step: 24342
+  - acc,none: 0.0
+    acc_stderr,none: 0.0
+    alias: lambada_openai
+    date: 1773843457.2592745
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_34296/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_34296/results_2026-03-18T15-59-18.079467.json
+    name: lambada_openai
+    perplexity,none: 296299754.48753256
+    perplexity_stderr,none: 38885299.42419071
+    sample_len: 5153
+    step: 34296
   last_test_loss: 3.105610683511515
   last_valid_loss: 3.0739690260808974
   lr:
@@ -702,6 +867,68 @@ extra:
   micro_batch_size: 8
   n_data: 4495355904
   n_param: 328688640
+  openbookqa:
+  - acc,none: 0.172
+    acc_norm,none: 0.3
+    acc_norm_stderr,none: 0.020514426225627987
+    acc_stderr,none: 0.01689386887634749
+    alias: openbookqa
+    date: 1773843326.2111385
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_12171/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_12171/results_2026-03-18T15-57-14.254157.json
+    name: openbookqa
+    sample_len: 500
+    step: 12171
+  - acc,none: 0.17
+    acc_norm,none: 0.29
+    acc_norm_stderr,none: 0.020313179231745138
+    acc_stderr,none: 0.016815633531393464
+    alias: openbookqa
+    date: 1773843444.338712
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_24342/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_24342/results_2026-03-18T15-58-51.696640.json
+    name: openbookqa
+    sample_len: 500
+    step: 24342
+  - acc,none: 0.16
+    acc_norm,none: 0.272
+    acc_norm_stderr,none: 0.019920483209566107
+    acc_stderr,none: 0.016411540980502393
+    alias: openbookqa
+    date: 1773843457.2592745
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_34296/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_34296/results_2026-03-18T15-59-18.079467.json
+    name: openbookqa
+    sample_len: 500
+    step: 34296
+  piqa:
+  - acc,none: 0.5195865070729053
+    acc_norm,none: 0.5174102285092492
+    acc_norm_stderr,none: 0.011658749823107507
+    acc_stderr,none: 0.01165686997928841
+    alias: piqa
+    date: 1773843326.2111385
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_12171/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_12171/results_2026-03-18T15-57-14.254157.json
+    name: piqa
+    sample_len: 1838
+    step: 12171
+  - acc,none: 0.529379760609358
+    acc_norm,none: 0.5103373231773667
+    acc_norm_stderr,none: 0.01166333067307569
+    acc_stderr,none: 0.01164566756505079
+    alias: piqa
+    date: 1773843444.338712
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_24342/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_24342/results_2026-03-18T15-58-51.696640.json
+    name: piqa
+    sample_len: 1838
+    step: 24342
+  - acc,none: 0.528835690968444
+    acc_norm,none: 0.500544069640914
+    acc_norm_stderr,none: 0.011665817258899291
+    acc_stderr,none: 0.011646407809944788
+    alias: piqa
+    date: 1773843457.2592745
+    json_path: /home/hk-project-p0023364/fr_as2097/DIR/hkfswork/fr_as2097-scan_llm_bench/scan_llm_bench/Horeka_1000_configs_eval/config_152_step_34296/__hkfs__work__workspace__scratch__fr_as2097-scan_llm_bench__scan_llm_bench__Horeka_1000_hf_checkpoints__config_152_step_34296/results_2026-03-18T15-59-18.079467.json
+    name: piqa
+    sample_len: 1838
+    step: 34296
   recommended_num_gpus: 8
   steps_budget: 34296
   test_loss: 3.105610683511515
@@ -2089,7 +2316,7 @@ extra:
   - 3.194074118489125
   - 3.0739690260808974
 learning_curve:
-- 3.194074118489125
+- 3.105610683511515
 objective_to_minimize: 3.105610683511515
 reported_as: success
 tb: null
