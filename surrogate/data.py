@@ -52,16 +52,19 @@ class SurrogateDataset:
     Returns numpy arrays.
     """
 
-    DEFAULT_TARGETS = ["valid_loss"]
-    # DEFAULT_TARGETS = ["test_loss"]
-    # d_model;n_layers;n_heads;weight_decay;beta1;beta2;warmup_steps;cooldown_steps;initial_lr;
-    # global_batch_size;final_step;total_compute;n_data;n_param;micro_batch_size;
-    # current_lr;tokens_so_far;train_loss_so_far;flops_so_far;eval_step
+    # DEFAULT_TARGETS = ["valid_loss"]
+    DEFAULT_TARGETS = ["test_loss"]
+    # DEFAULT_FEATURES = [
+    #     "d_model", "n_layers", "n_heads", "weight_decay", "beta1", "beta2",
+    #     "warmup_steps", "cooldown_steps", "initial_lr", "global_batch_size",
+    #     "final_step", "total_compute", "n_data", "n_param", "micro_batch_size",
+    #     "current_lr", "tokens_so_far", "train_loss_so_far", "flops_so_far", "eval_step",
+    # ]
     DEFAULT_FEATURES = [
         "d_model", "n_layers", "n_heads", "weight_decay", "beta1", "beta2",
         "warmup_steps", "cooldown_steps", "initial_lr", "global_batch_size",
-        "final_step", "total_compute", "n_data", "n_param", "micro_batch_size",
-        "current_lr", "tokens_so_far", "train_loss_so_far", "flops_so_far", "eval_step",
+        "final_step", "total_compute", "n_data", "n_param",
+        "current_lr", "tokens_so_far", "flops_so_far", "eval_step",
     ]
 
     def __init__(

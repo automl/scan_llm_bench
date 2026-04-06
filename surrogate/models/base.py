@@ -13,6 +13,9 @@ class SurrogateModel:
     def predict(self, X: np.ndarray) -> np.ndarray:
         raise NotImplementedError
 
+    def predict_with_uncertainty(self, X: np.ndarray) -> dict[str, np.ndarray]:
+        return {"mean": np.asarray(self.predict(X)).reshape(-1)}
+
     def validate(self, dataset: SurrogateDataset, sizes):
         X_test, y_test = dataset.get_test_data()
         results = {}
@@ -73,6 +76,19 @@ class MultiLabelSurrogateModel:
         X = np.asarray(X)
         preds = [np.asarray(self.models[label].predict(X)).reshape(-1) for label in self.labels]
         return np.stack(preds, axis=1)
+
+    def predict_with_uncertainty(self, X: np.ndarray) -> dict[str, dict[str, np.ndarray]]:
+        X = np.asarray(X)
+        outputs: dict[str, dict[str, np.ndarray]] = {}
+
+        for label in self.labels:
+            model_outputs = self.models[label].predict_with_uncertainty(X)
+            outputs[label] = {
+                key: np.asarray(value)
+                for key, value in model_outputs.items()
+            }
+
+        return outputs
 
     def get_predictor(self, label: str) -> SurrogateModel:
         return self.models[label]

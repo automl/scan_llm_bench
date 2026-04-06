@@ -51,10 +51,23 @@ class LLMBenchmark:
         row = config.build_feature_row(self.features)
         model_stats = config.compute_model_stats()
 
-        preds = self.surrogate.predict(row)[0]
+        preds_with_uncertainty = self.surrogate.predict_with_uncertainty(row)
+
+        preds = np.array(
+            [
+                np.asarray(preds_with_uncertainty[label]["mean"]).reshape(-1)[0]
+                for label in self.targets
+            ]
+        )
+        preds_uncertainty_width = np.array(
+            [
+                np.asarray(preds_with_uncertainty[label]["uncertainty_width"]).reshape(-1)[0]
+                for label in self.targets
+            ]
+        )
         predictions = {
-            label: round(float(pred), 4)
-            for label, pred in zip(self.targets, preds)
+            label: {"mean": round(float(pred), 4), "uncertainty_width": round(float(uncertainty_pred), 4)}
+            for label, pred, uncertainty_pred in zip(self.targets, preds, preds_uncertainty_width)
         }
 
         return {
@@ -114,14 +127,14 @@ if __name__ == "__main__":
 
     print("Config 1 (512d, 12L, 1B tokens, 100% progress):")
     print(f"  Predictions: {result1['predictions']}")
-    print(f"  Model Stats: {result3['model_stats']}")
+    print(f"  Model Stats: {result1['model_stats']}")
     print(f"  Total params: {result1['model_stats']['total_params']:,}")
     print(f"  Total FLOPs:  {result1['model_stats']['total_training_flops_formatted']}")
 
     print()
     print("Config 2 (768d, 16L, 5B tokens, 50% progress):")
     print(f"  Predictions: {result2['predictions']}")
-    print(f"  Model Stats: {result3['model_stats']}")
+    print(f"  Model Stats: {result2['model_stats']}")
     print(f"  Total params: {result2['model_stats']['total_params']:,}")
     print(f"  Total FLOPs:  {result2['model_stats']['total_training_flops_formatted']}")
 
