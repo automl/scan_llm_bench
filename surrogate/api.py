@@ -16,8 +16,8 @@ class LLMBenchmark:
 
     def __init__(
         self,
-        train_csv: str = "new_surrogate_data/train_last_rows.csv",
-        test_csv: str = "new_surrogate_data/test_last_rows.csv",
+        train_csv: str = "surrogate_data/train.csv",
+        test_csv: str = "surrogate_data/test.csv",
         targets: list[str] | None = None,
         seed: int = 1,
         device: str = "cuda",
@@ -77,7 +77,8 @@ class LLMBenchmark:
 
 
 if __name__ == "__main__":
-    bench = LLMBenchmark(targets=["valid_loss", "test_loss"])
+    bench = LLMBenchmark(targets=["valid_loss", "test_loss", "hellaswag_acc", "arc_challenge_acc", "arc_easy_acc",
+                                  "copa_acc", "openbookqa_acc", "piqa_acc"])
 
     config1 = LLMConfig(
         d_model=512,
