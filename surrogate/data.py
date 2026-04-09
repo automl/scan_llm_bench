@@ -99,6 +99,12 @@ class SurrogateDataset:
         y_train = self.train_df[self.targets].to_numpy()
         return X_train, y_train
 
+    def get_all_data(self):
+        all_df = pd.concat([self.train_df, self.test_df], axis=0, ignore_index=True)
+        X_all = all_df[self.features].to_numpy()
+        y_all = all_df[self.targets].to_numpy()
+        return X_all, y_all
+    
     def get_train_subset_df(self, n_cfg: int) -> pd.DataFrame:
         selected = set(self._configs[: int(n_cfg)])
         return self.train_df[self.train_df[self.config_id_col].isin(selected)]
