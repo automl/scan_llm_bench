@@ -21,14 +21,14 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 include = [
-    "surrogate",
-    "surrogate.*"
+    "llm_bench",
+    "llm_bench.*"
 ]
 
 exclude = [
-    "surrogate.results",
-    "surrogate.plots"
+    "llm_bench.results",
+    "llm_bench.plots"
 ]
 
 [tool.setuptools.package-data]
-"surrogate" = ["surrogate_data/*.csv"]
+"llm_bench.surrogate_data" = ["*.csv"]
