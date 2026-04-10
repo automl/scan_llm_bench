@@ -325,3 +325,14 @@ def format_flops(flops: int) -> str:
     else:
         return f"{flops:_} FLOPs"
 
+def get_target_global_batch_for_tokens(n_tokens: int) -> int:
+    """Target global batch size from number of tokens and model param count.
+    """
+    if n_tokens < 100_000_000:
+        return 16
+    if n_tokens < 1_000_000_000:
+        return 32
+    if n_tokens < 10_000_000_000:
+        return 64
+    return 128
+

@@ -9,9 +9,8 @@ from llm_bench.utils import (
     flops_per_token_training,
     total_training_flops,
     format_flops,
+    get_target_global_batch_for_tokens
 )
-from scripts.probe_batch_size import get_target_global_batch_for_tokens
-
 
 @dataclass
 class LLMConfig:
