@@ -27,10 +27,10 @@ class LLMConfig:
     weight_decay: float
     beta1: float
     beta2: float
-    warmup_steps: float
     cooldown_steps: float
     n_tokens: int
     training_progress: float = 1.0
+    warmup_steps: float = 0.05
 
     # Architecture constants
     VOCAB_SIZE: int = 50277
@@ -39,6 +39,60 @@ class LLMConfig:
     EXPAND: float = 8 / 3
     WEIGHT_TYING: bool = True
     LR_END: float = 0.0
+
+
+    def __post_init__(self):
+        valid_d_model = [i * 64 for i in range(4, 19)]
+        valid_n_heads = [i * 2  for i in range(3, 13)]
+
+        bounds = {
+            "lr":             (1.0e-5, 1.0e-2),
+            "weight_decay":   (1.0e-3, 0.2),
+            "n_layers":       (4, 24),
+            "beta1":          (0.8, 0.99),
+            "beta2":          (0.9, 0.999),
+            "cooldown_steps": (0.0, 0.3),
+            "n_tokens":       (200_000_000, 16_000_000_000),
+        }
+        param_values = {
+            "lr":             self.lr,
+            "weight_decay":   self.weight_decay,
+            "n_layers":       self.n_layers,
+            "beta1":          self.beta1,
+            "beta2":          self.beta2,
+            "cooldown_steps": self.cooldown_steps,
+            "n_tokens":       self.n_tokens,
+        }
+
+        for param, value in param_values.items():
+            lo, hi = bounds[param]
+            if not (lo <= value <= hi):
+                raise ValueError(
+                    f"Parameter '{param}' = {value} is outside the search space range "
+                    f"[{lo}, {hi}]."
+                )
+
+        if self.d_model not in valid_d_model:
+            raise ValueError(
+                f"Parameter 'd_model' = {self.d_model} is outside the search space. "
+                f"d_model must be a multiple of 64 in the range "
+                f"[{valid_d_model[0]}, {valid_d_model[-1]}]. "
+                f"Valid values: {valid_d_model}"
+            )
+
+        if self.n_heads not in valid_n_heads:
+            raise ValueError(
+                f"Parameter 'n_heads' = {self.n_heads} is outside the search space. "
+                f"n_heads must be a multiple of 2 in the range "
+                f"[{valid_n_heads[0]}, {valid_n_heads[-1]}]. "
+                f"Valid values: {valid_n_heads}"
+            )
+        if self.d_model % self.n_heads != 0:
+            raise ValueError(
+                f"'d_model' ({self.d_model}) must be divisible by 'n_heads' ({self.n_heads}). "
+                f"Current ratio d_model / n_heads = {self.d_model / self.n_heads:.4f} is not an integer. "
+                f"Choose n_heads that evenly divides d_model = {self.d_model}."
+            )
 
     def _compute_current_lr(self, final_step: int) -> float:
         """Approximate current_lr at final_step using a WSD schedule."""
@@ -77,7 +131,6 @@ class LLMConfig:
         flops_per_tok = flops_per_token_training(
             self.n_layers, self.d_model, self.VOCAB_SIZE, self.SEQ_LEN, self.MLP_CLASS, self.EXPAND
         )
-        
         # Adjust for training_progress
         effective_tokens = self.n_tokens * self.training_progress
         total_flops = total_training_flops(

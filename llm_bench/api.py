@@ -115,7 +115,7 @@ class LLMBenchmark:
 
 if __name__ == "__main__":
     bench = LLMBenchmark(targets=["valid_loss", "test_loss", "hellaswag_acc", "arc_challenge_acc", "arc_easy_acc",
-                                  "copa_acc", "openbookqa_acc", "piqa_acc"])
+                        "copa_acc", "openbookqa_acc", "piqa_acc"])
 
     config1 = LLMConfig(
         d_model=512,
@@ -125,12 +125,10 @@ if __name__ == "__main__":
         weight_decay=0.1,
         beta1=0.9,
         beta2=0.95,
-        warmup_steps=0.05,
         cooldown_steps=0.2,
         n_tokens=1_000_000_000,
         training_progress=1.0,
     )
-
     config2 = LLMConfig(
         d_model=768,
         n_layers=16,
@@ -139,12 +137,10 @@ if __name__ == "__main__":
         weight_decay=0.05,
         beta1=0.9,
         beta2=0.95,
-        warmup_steps=0.05,
         cooldown_steps=0.2,
         n_tokens=5_000_000_000,
         training_progress=0.5,
     )
-
     config3 = LLMConfig(
         d_model=768,
         n_layers=16,
@@ -153,35 +149,51 @@ if __name__ == "__main__":
         weight_decay=0.05,
         beta1=0.9,
         beta2=0.95,
-        warmup_steps=0.05,
         cooldown_steps=0.2,
         n_tokens=5_000_000_000,
         training_progress=1,
     )
-    results = bench.query_many([config1, config2, config3])
-    print(results)
-    # result1 = bench.query(config1)
-    # result2 = bench.query(config2)
-    # result3 = bench.query(config3)
+    # results = bench.query_many([config1, config2, config3, config4, config5])
+    # print(results)
 
-    # print("Config 1 (512d, 12L, 1B tokens, 100% progress):")
-    # print(f"  Predictions: {result1['predictions']}")
-    # print(f"  Model Stats: {result1['model_stats']}")
-    # print(f"  Total params: {result1['model_stats']['total_params']:,}")
-    # print(f"  Total FLOPs:  {result1['model_stats']['total_training_flops_formatted']}")
-    #
-    # print()
-    # print("Config 2 (768d, 16L, 5B tokens, 50% progress):")
-    # print(f"  Predictions: {result2['predictions']}")
-    # print(f"  Model Stats: {result2['model_stats']}")
-    # print(f"  Total params: {result2['model_stats']['total_params']:,}")
-    # print(f"  Total FLOPs:  {result2['model_stats']['total_training_flops_formatted']}")
-    #
-    # print()
-    # print("Config 3 (768d, 16L, 5B tokens, 100% progress):")
-    # print(f"  Predictions: {result3['predictions']}")
-    # print(f"  Model Stats: {result3['model_stats']}")
-    # print(f"  Total params: {result3['model_stats']['total_params']:,}")
-    # print(f"  Total FLOPs:  {result3['model_stats']['total_training_flops_formatted']}")
+    for label, make_config in [
+        ("Config 1 (512d, 12L, 1B tokens, 100% progress)", lambda: config1),
+        ("Config 2 (768d, 16L, 5B tokens, 50% progress)",  lambda: config2),
+        ("Config 3 (768d, 16L, 5B tokens, 100% progress)", lambda: config3),
+        ("Config 4 (256d, 12L, n_heads=10 - invalid divisibility)", lambda: LLMConfig(
+            d_model=256,
+            n_layers=12,
+            n_heads=10,
+            lr=1e-2,
+            weight_decay=0.1,
+            beta1=0.9,
+            beta2=0.95,
+            cooldown_steps=0.2,
+            n_tokens=1_000_000_000,
+            training_progress=1.0,
+        )),
+        ("Config 5 (258d - out of range)", lambda: LLMConfig(
+            d_model=258,
+            n_layers=12,
+            n_heads=8,
+            lr=3e-3,
+            weight_decay=0.1,
+            beta1=0.9,
+            beta2=0.95,
+            cooldown_steps=0.2,
+            n_tokens=1_000_000_000,
+            training_progress=1.0,
+        )),
+    ]:
+        print(f"\n{label}:")
+        try:
+            cfg = make_config()
+            result = bench.query(cfg)
+            print(f"  Predictions: {result['predictions']}")
+            print(f"  Model Stats: {result['model_stats']}")
+            print(f"  Total params: {result['model_stats']['total_params']:,}")
+            print(f"  Total FLOPs:  {result['model_stats']['total_training_flops_formatted']}")
+        except ValueError as e:
+            print(f"  [ERROR] Invalid config: {e}")
 
 
