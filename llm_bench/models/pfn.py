@@ -8,7 +8,7 @@ class TabPFNModel(SurrogateModel):
     def __init__(self, seed: int = 42, device: str = "cpu"):
         self.seed = seed
         self.device = device
-        self.model = TabPFNRegressor(device=device, random_state=seed)
+        self.model = TabPFNRegressor(device=device, random_state=seed, ignore_pretraining_limits=True)
 
     def fit(self, X: np.ndarray, y: np.ndarray):
         self.model.fit(X, y)
