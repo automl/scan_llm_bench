@@ -135,4 +135,3 @@ Modifications made:
 - Split training and validation
 - Modified specific training methodology (Neps Sampling, Search Space, Resource Preparing, Batch Size allocation, Neps Reports)
 - Slurm Manager for job clustering
-- Surrogate Benchmark for LLM
