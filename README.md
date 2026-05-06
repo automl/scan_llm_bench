@@ -1,4 +1,7 @@
+This pipeline is based on the X pipeline.
+
 # Pretrain a Transformer on Language Modeling
+
 A minimal yet efficient implementation of causal language modeling in PyTorch.
 
 It features a custom torch-compilable Transformer model implementation supporting RoPE, GLU, and RMSNorm.
@@ -7,47 +10,101 @@ It supports distributed training via Distributed Data Parallel (DDP).
 A dedicated script is included for downloading, tokenizing, and chunking data, making data preparation seamless.
 
 ## 🛠 Installation
-We recommend running `plainLM` in a dedicated Python environment. To install dependencies in an Anaconda environment, execute:
+
+We recommend running the pipeline in a dedicated Python environment. To install dependencies in an Anaconda environment from the .yml file, execute:
+
 ```bash
-conda create --name plainLM python=3.12 -y && conda activate plainLM && cd plainLM
-pip install .
+conda env create -f environment.yml
 ```
 
 ## 📚 Data
+
 We provide a script for downloading, tokenizing, chunking and saving Hugging Face datasets: `data/datasets/prepare.py`.
-You can specify any HF dataset and tokenizer. To avoid downloading the entire corpus, we support streaming, tokenizing, and chunking data on-the-fly. We provide an example for FineWebEdu-100BT in `data/datasets/prepare_finewebedu_100BT.sh`.
+You can specify any HF dataset and tokenizer. To avoid downloading the entire corpus, we support streaming, tokenizing, and chunking data on-the-fly. We provide an example for SlimPajama in `data/datasets/prepare_slim_pajama.sh`.
 
 ## ⚡️ Usage
 
-Specify hyperparameters in `config.yaml` and launch training as follows:
+## Scaling & Hyperparameter Search with X
 
-#### Single GPU/CPU:
-```bash
-  python train.py --config=config/config.yaml
+This pipeline integrates [X](X) for scaling & hyperparameter search. The workflow is:
+
+1. Sample configs → 2. Train each config → 3. Validate each config
+
+### 1. Config Setup
+
+A NePS config is a standard training config with an extra `neps_search_space` section that defines which hyperparameters to search over and their ranges. See `config/neps_configs/hpo_example.yaml` for a full example. Each parameter defined in the search space overrides the base config value during training.
+
+```yaml
+# Standard training config fields
+lr: 3.0e-3
+weight_decay: 0.1
+# ... other training fields ...
+
+# NePS search space: define hyperparameters to optimize
+neps_search_space:
+  lr:
+    type: float
+    lower: 1.0e-5
+    upper: 1.0e-1
+    log: true
+  weight_decay:
+    type: float
+    lower: 1.0e-3
+    upper: 0.2
+    log: true
 ```
-#### Multiple GPUs:
+
+Supported parameter types: `float`, `int`, `categorical`, `constant`. Use `log: true` for log-scale sampling.
+
+### 2. Sample Configs
+
+Use `neps/hpo_neps.py` to sample configurations from the search space. This creates a `configs/` directory under `--root_dir` with one sub-folder per config:
+
 ```bash
-  torchrun --nnodes=1 --nproc_per_node=4 train.py --config=code/config/sweep.yaml
+python neps/hpo_neps.py \
+  --config config/neps_configs/hpo_example.yaml \
+  --root_dir neps/neps_configs/MyExperiment \
+  --max_evaluations 50
 ```
 
-#### Run a sweep in parallel on a SLURM or Condor HPC cluster:
+On a cluster, generate and submit SLURM scripts automatically via `cluster/slurm_manager.py` (see `--help`).
 
-1. **Define hyperparameter sweep**:
-  create a single YAML file with lists of hyperparameter values. Each value in the list will represent a different configuration, e.g.:
-   ```yaml
-   lr: [0.1, 0.01]
-   wd: [0.1, 0.2, 0.5]
-   beta1: 0.9
-   ...
-   ```
-2. **Submit the sweep**: 
-   Submit a job-array, where each job executes the same python script and reads the same configuration, but with a different `job_idx`. We use `job_idx` to map a job to its hyperparameters; `job_idx` should range from `0` to `n-1`, where `n` is the number of Cartesian product configurations in the YAML. This is done automatically by `cluster/slurm.sh` and `cluster/condor.sub`. Python takes care of assigning the corresponding configuration to each job based on the value of `job_idx`.
+### 3. Train a Config
 
+Train a single sampled config (e.g. `config_5`):
+
+```bash
+python train.py \
+  --config neps/neps_configs/MyExperiment/configs/config_5/config.yaml \
+  --save_neps_report \
+  --neps_root_dir neps/neps_configs/MyExperiment
+```
+
+To loop over a range of configs sequentially, set `START_CONFIG` / `END_CONFIG` and use `cluster/single_gpu/run_neps_configs.sh`.
+
+### 4. Validate a Config
+
+After training, run validation to evaluate a checkpoint and write the validation loss back into the NePS report:
+
+```bash
+python validation.py \
+  --config neps/neps_configs/MyExperiment/configs/config_5/config.yaml \
+  --config_number 5 \
+  --neps_root_dir neps/neps_configs/MyExperiment \
+  --save_neps_report
+```
+
+`--config_number` identifies which config folder to update. See `cluster/single_gpu/run_validation.sh` for the SLURM equivalent.
+
+### SLURM Script Generation
+
+`cluster/slurm_manager.py` automates generating and submitting SLURM scripts for all stages (sample, train array, validate array, multi-GPU, etc.). Run with `--help` for all options.
 
 ## 📂 Structure
+
 ```
-plainLM/
-├── cluster/             # HPC scripts (SLURM & Condor)
+scan_llm_bench/
+├── cluster/             # HPC scripts
 ├── config/              # Configuration files for training and model setup
 ├── data/                # Everything regarding data preparation and data stream
 │   └── datasets/        # Data preprocessing files to download, tokenize, chunk and save data
@@ -56,40 +113,15 @@ plainLM/
 ├── engine/              # Core implementation of the model engine: a torch.nn.Module implementing training steps and evaluations
 ├── models/              # Model architectures
 ├── optim/               # Optimization utilities
+├── scripts/             # Helpful scripts
+├── llm_bench/           # Surrogate benchmark (Can be ignored in this repo)
 ├── checkpoint_utils.py  # Checkpoint utilities
 ├── torch_utils.py       # PyTorch utilities (DDP, seed, TF32...)
-├── train.py             # Main training script ⭐️
+├── train.py             # Main training script
+├── validation.py        # Main evaluation script
 └── utils.py             # Miscellaneous helper functions
 ```
 
-## ☑️ TODO
-- [FSDP2](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html) support, ZeRO-2 and tensor parallel compatibility
-- dummy data
-- unit tests
-- add seed to `DistributedSampler`
-
-## Citation
-```bibtex
-@misc{ajroldi2024plainlm,
-  author = {Niccolò Ajroldi},
-  title = {plainLM: Language Model Pretraining in PyTorch},
-  year = {2024},
-  howpublished = {\url{https://github.com/Niccolo-Ajroldi/plainLM}}
-}
-```
-
 ## Credits
-This project was inspired by:  
-- [Cramming](https://github.com/JonasGeiping/cramming) by Jonas Geiping
-- [GPT-NeoX](https://github.com/EleutherAI/gpt-neox) by EleutherAI
-- [NanoGPT](https://github.com/karpathy/nanoGPT) by Andrej Karpathy
 
-Huge thanks to these projects for their contributions to open-source language model pretraining!
-
-## Published works using `plainLM`
-Some recent projects using plainLM:
-
-- Orvieto, A., & Gower, R. (2025). In search of Adam’s secret sauce [ArXiv](https://arxiv.org/abs/2505.21829).
-- Ajroldi, N., Orvieto, A., & Geiping, J. (2025). When, where and why to average weights? In Proceedings of [ICML 2025](https://icml.cc/virtual/2025/poster/45698).
-- Srećković, T., Geiping, J., & Orvieto, A. (2025). Is your batch size the problem? Revisiting the Adam-SGD gap in language modeling. [ArXiv](https://arxiv.org/abs/2506.12543).
-- Belloni, A., Noci, L., & Orvieto, A. (2025). Universal Dynamics of Warmup Stable Decay: Understanding WSD Beyond Transformers. [MOSS Workshop, ICML 2025].(https://icml.cc/virtual/2025/47679)
+This project was inspired and is an adaptation of the work from: X
