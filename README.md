@@ -1,4 +1,4 @@
-This pipeline is based on the X pipeline.
+This pipeline is based on the [PlainLM](https://github.com/Niccolo-Ajroldi/plainLM) pipeline.
 
 # Pretrain a Transformer on Language Modeling
 
@@ -26,7 +26,7 @@ You can specify any HF dataset and tokenizer. To avoid downloading the entire co
 
 ## Scaling & Hyperparameter Search with X
 
-This pipeline integrates [X](X) for scaling & hyperparameter search. The workflow is:
+This pipeline integrates [Neural-Pipeline-Search]([https://github.com/automl/neps]) for scaling & hyperparameter search. The workflow is:
 
 1. Sample configs → 2. Train each config → 3. Validate each config
 
@@ -124,4 +124,15 @@ scan_llm_bench/
 
 ## Credits
 
-This project was inspired and is an adaptation of the work from: X
+This project was inspired and is an adaptation of the work from: [PlainLM](https://github.com/Niccolo-Ajroldi/plainLM)
+
+## Acknowledgements
+
+This project is based on PlainLM by Niccolò Ajroldi.
+Original repository: https://github.com/Niccolo-Ajroldi/plainLM
+
+Modifications made:
+- Split training and validation
+- Modified specific training methodology (Neps Sampling, Search Space, Resource Preparing, Batch Size allocation, Neps Reports)
+- Slurm Manager for job clustering
+- Surrogate Benchmark for LLM
