@@ -2,6 +2,7 @@ import torch
 
 from torch import distributed as dist
 from torch.nn import CrossEntropyLoss
+import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from contextlib import nullcontext
 
@@ -15,6 +16,9 @@ def _move_to_device(batch, seq_len, device, intra_doc_masking):
 
     inputs = batch['input_ids'][:, :seq_len]
     targets = batch['input_ids'][:, 1: (seq_len + 1)]
+    target_loss_mask = None
+    if 'loss_mask' in batch:
+        target_loss_mask = batch['loss_mask'][:, 1: (seq_len + 1)]
 
     if intra_doc_masking:
         # build one mask per example and stack into (bsz, L, L)
@@ -30,10 +34,29 @@ def _move_to_device(batch, seq_len, device, intra_doc_masking):
         # pin arrays allows to move them to GPU asynchronously (non_blocking=True)
         inputs = inputs.pin_memory().to(device, non_blocking=True)
         targets = targets.pin_memory().to(device, non_blocking=True)
+        if target_loss_mask is not None:
+            target_loss_mask = target_loss_mask.pin_memory().to(device, non_blocking=True)
     else:
         inputs, targets = inputs.to(device), targets.to(device)
+        if target_loss_mask is not None:
+            target_loss_mask = target_loss_mask.to(device)
 
-    return inputs, targets, attn_mask
+    return inputs, targets, attn_mask, target_loss_mask
+
+
+def _compute_lm_loss(logits, targets, target_loss_mask=None):
+    """Compute next-token CE, ignoring padded target positions when a mask exists."""
+    flat_loss = F.cross_entropy(
+        logits.view(-1, logits.size(-1)),
+        targets.view(-1),
+        reduction='none',
+    )
+    if target_loss_mask is None:
+        return flat_loss.mean(), torch.tensor(targets.numel(), device=targets.device, dtype=torch.float32)
+
+    flat_mask = target_loss_mask.reshape(-1).to(flat_loss.dtype)
+    denom = flat_mask.sum().clamp_min(1.0)
+    return (flat_loss * flat_mask).sum() / denom, denom.detach()
 
 
 class TorchEngine(torch.nn.Module):
@@ -102,7 +125,7 @@ class TorchEngine(torch.nn.Module):
         self.micro_steps += 1
         self.accumulated_samples += 1
 
-        inputs, targets, attn_mask = _move_to_device(
+        inputs, targets, attn_mask, target_loss_mask = _move_to_device(
             batch, self.seq_len, self.device, self.intra_doc_masking)
 
         # sync (reduce) gradients at the last accumulation step
@@ -113,8 +136,7 @@ class TorchEngine(torch.nn.Module):
         with self.ctx:
             output = self.model(inputs, attn_mask)
             logits = getattr(output, 'logits', output)
-            loss = self.criterion(
-                logits.view(-1, logits.size(-1)), targets.view(-1))
+            loss, _ = _compute_lm_loss(logits, targets, target_loss_mask)
             loss = loss / self.accumulation_steps
 
         # detach for logging (scale up to undo the division above)
@@ -157,25 +179,24 @@ class TorchEngine(torch.nn.Module):
         total_loss = 0.0
         num_batches = 0
         for batch in dataloader:
-            inputs, targets, attn_mask = _move_to_device(
+            inputs, targets, attn_mask, target_loss_mask = _move_to_device(
                 batch, self.seq_len, self.device, self.intra_doc_masking)
             with self.ctx:
                 output = self.model(inputs, attn_mask)
                 logits = getattr(output, 'logits', output)
-                loss = self.criterion(
-                    logits.view(-1, logits.size(-1)), targets.view(-1))
+                loss, token_count = _compute_lm_loss(logits, targets, target_loss_mask)
 
             if torch.isnan(loss) or loss is None:
                 raise ValueError('Validation loss is nan')
 
-            total_loss += loss.item()
-            num_batches += 1
+            total_loss += loss.item() * token_count.item()
+            num_batches += token_count.item()
 
         # reduce loss across processes
         if dist.is_initialized():
             total_loss_tensor = torch.tensor([total_loss], device=self.device)
             num_batches_tensor = torch.tensor(
-                [num_batches], device=self.device, dtype=torch.int)
+                [num_batches], device=self.device, dtype=torch.float32)
             dist.all_reduce(total_loss_tensor, op=dist.ReduceOp.SUM)
             dist.all_reduce(num_batches_tensor, op=dist.ReduceOp.SUM)
             total_loss = total_loss_tensor.item()
